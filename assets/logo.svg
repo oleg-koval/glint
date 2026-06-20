@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">glint logo</title>
+  <desc id="desc">A coral spark above a segmented context gauge on a dark tile.</desc>
+  <defs>
+    <linearGradient id="bar" x1="136" y1="0" x2="376" y2="0" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#72c585"/>
+      <stop offset="60%" stop-color="#e6c14b"/>
+      <stop offset="100%" stop-color="#e08a7a"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="#0d1117"/>
+  <rect x="40" y="40" width="432" height="432" rx="92" fill="#111722" stroke="#1f2937" stroke-width="8"/>
+  <!-- spark / ✻ -->
+  <g stroke="#e6826f" stroke-width="26" stroke-linecap="round">
+    <line x1="256" y1="150" x2="256" y2="286"/>
+    <line x1="197" y1="184" x2="315" y2="252"/>
+    <line x1="315" y1="184" x2="197" y2="252"/>
+  </g>
+  <circle cx="256" cy="218" r="20" fill="#f0a08f"/>
+  <!-- context gauge -->
+  <g>
+    <rect x="136" y="338" width="240" height="34" rx="17" fill="#1c2533"/>
+    <rect x="136" y="338" width="150" height="34" rx="17" fill="url(#bar)"/>
+  </g>
+</svg>
