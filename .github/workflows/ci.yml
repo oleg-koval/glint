@@ -1,8 +1,7 @@
 name: CI
 
-on:
+"on":
   push:
-    branches: [main]
     paths-ignore: ['**.md', 'assets/**']
   pull_request:
     paths-ignore: ['**.md', 'assets/**']
