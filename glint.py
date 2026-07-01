@@ -3,7 +3,7 @@
 
 Reads the Status hook JSON on stdin and prints one ANSI-colored line:
 
-  ✻ Sonnet 4.6   📁 my-repo   🌿 main ●3 ↑1   💰 $0.42 · 4m   +1.2k/-340   🧠 36% ▕███░░░░░▏ 357k/1.0M
+  ✻ S4.6   📁 my-repo   🌿 main ●3 ↑1   💰 $0.42 · 4m   +1.2k/-340   🧠 36% ▕███░░░░░▏ 357k/1.0M   ⏱5h 63%▕███░░▏ 📅7d 10%▕█░░░░▏
 
 Every segment degrades gracefully: a missing field means the segment is omitted,
 never an error. A crash falls back to a minimal badge so the bar never goes blank.
@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 
@@ -64,9 +65,19 @@ def human_lines(n: int) -> str:
     return f"{n / 1000:.1f}k" if n >= 1000 else str(n)
 
 
+# family name → single-letter badge prefix (S5, O4.8, H4.5, F5, ...)
+_FAMILY_INITIALS = {"sonnet": "S", "opus": "O", "haiku": "H", "fable": "F"}
+
+
 def model_short(name: str) -> str:
-    # "Claude Sonnet 4.6" → "Sonnet 4.6"; keep custom names as-is
-    return name.replace("Claude ", "").strip() or name
+    # "Sonnet 4.6" / "claude-opus-4-8" → "S4.6" / "O4.8"; unknown families kept as-is
+    n = name.replace("Claude ", "").strip()
+    low = n.lower()
+    for fam, initial in _FAMILY_INITIALS.items():
+        if fam in low:
+            m = re.search(r"(\d+(?:[.\-]\d+)?)", n[low.index(fam) + len(fam):])
+            return f"{initial}{m.group(1).replace('-', '.')}" if m else initial
+    return n or name
 
 
 def tok_h(n: int) -> str:
@@ -170,17 +181,41 @@ def main() -> None:
         segments.append(f"{la}{c('/', DIM)}{lr}")
 
     # ── Live context gauge ──
-    tokens = context_tokens(d.get("transcript_path") or "")
-    if tokens > 0:
+    cw = d.get("context_window") or {}
+    used_pct = cw.get("used_percentage")
+    limit = cw.get("context_window_size")
+    if isinstance(used_pct, (int, float)) and limit:
+        pct = min(max(used_pct / 100, 0.0), 1.0)
+        tokens = cw.get("total_input_tokens") or 0
+    else:
+        tokens = context_tokens(d.get("transcript_path") or "")
         # 200k default; auto-bump to 1M when clearly on the long-context beta.
         limit = 1_000_000 if (tokens > 200_000 or d.get("exceeds_200k_tokens")) else 200_000
-        pct = min(tokens / limit, 1.0)
+        pct = min(tokens / limit, 1.0) if limit else 0.0
+
+    if tokens > 0:
         gc = GREEN if pct < 0.6 else YELLOW if pct < 0.85 else RED
-        segments.append(
+        seg = (
             "🧠 " + c(f"{pct * 100:.0f}%", gc, bold=True)
             + " " + c(gauge(pct), gc)
             + " " + c(f"{tok_h(tokens)}/{tok_h(limit)}", DIM)
         )
+        # Remaining budget has dropped into the compact-soon zone.
+        if (100 - pct * 100) <= 30:
+            seg += "  " + c("⚠ compact", RED, bold=True)
+        segments.append(seg)
+
+    # ── Rate limit bars (5h session / 7d weekly) ──
+    rl = d.get("rate_limits") or {}
+    rl_bits = []
+    for key, icon, label in (("five_hour", "⏱", "5h"), ("seven_day", "📅", "7d")):
+        used = (rl.get(key) or {}).get("used_percentage")
+        if isinstance(used, (int, float)):
+            rpct = min(max(used / 100, 0.0), 1.0)
+            rc = GREEN if rpct < 0.6 else YELLOW if rpct < 0.85 else RED
+            rl_bits.append(f"{icon}{label} " + c(f"{used:.0f}%", rc) + c(gauge(rpct, width=5), rc))
+    if rl_bits:
+        segments.append(" ".join(rl_bits))
 
     sys.stdout.write(sep().join(segments))
 

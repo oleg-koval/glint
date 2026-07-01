@@ -30,14 +30,15 @@ One Python file. Zero dependencies. ~75 ms per render. Never crashes your status
 
 | Segment | Shows | Detail |
 |---------|-------|--------|
-| ✻ **Model** | `Sonnet 4.6` | Active model, coral & bold, `Claude ` prefix trimmed |
+| ✻ **Model** | `S4.6` | Active model, coral & bold, abbreviated to a family letter + version (`Sonnet 4.6` → `S4.6`, `Opus 4.8` → `O4.8`) |
 | 📁 **Directory** | `my-repo` | Workspace basename, `~` for home |
 | 🌿 **Git** | `main ●3 ↑1 ↓2` | Branch + uncommitted count + ahead/behind upstream. **Green when clean, yellow when dirty** |
 | 💰 **Cost · time** | `$0.42 · 4m` | Session spend and duration. **Green < $1, gold < $5, red beyond** |
 | **Lines** | `+1.2k/-340` | Lines added / removed this session, `k`-shortened |
-| 🧠 **Context gauge** | `36% ▕███░░░░░▏ 357k/1.0M` | **Live** token usage from the transcript. Gradient **green → yellow → red** as you fill up. Auto-detects the 200k vs 1M window |
+| 🧠 **Context gauge** | `36% ▕███░░░░░▏ 357k/1.0M` | **Live** token usage. Gradient **green → yellow → red** as you fill up. When remaining budget drops to ≤30%, a bold `⚠ compact` badge appears so you compact before you're forced to |
+| ⏱📅 **Rate limits** | `⏱5h 63%▕███░░▏ 📅7d 10%▕█░░░░▏` | Session (5h) and weekly (7d) rate-limit usage, same green → yellow → red gradient. Hidden if your plan doesn't report them |
 
-Every segment is independent and **degrades gracefully** — no git repo hides the branch, no cost data hides the money, an unreadable transcript hides the gauge. A hard failure falls back to a bare `✻ Claude` so your prompt is never blank.
+Every segment is independent and **degrades gracefully** — no git repo hides the branch, no cost data hides the money, missing rate-limit data hides the bars. A hard failure falls back to a bare `✻ Claude` so your prompt is never blank.
 
 ## Installation
 
@@ -63,9 +64,10 @@ curl -fsSL https://raw.githubusercontent.com/oleg-koval/glint/main/glint.py -o ~
 
 ## How it works
 
-Claude Code runs your `statusLine.command` on every render and pipes it a JSON blob describing the session ([docs](https://docs.claude.com/en/docs/claude-code/statusline)). `glint` parses that blob, runs a couple of sub-second `git` calls, and — for the context gauge — reads the **last main-thread assistant turn** from your transcript and sums its input-side tokens (`input + cache_creation + cache_read`). That sum is your true current context size; the gauge divides it by the model's window.
+Claude Code runs your `statusLine.command` on every render and pipes it a JSON blob describing the session ([docs](https://docs.claude.com/en/docs/claude-code/statusline)). `glint` parses that blob, runs a couple of sub-second `git` calls, and reads two more things:
 
-Sub-agent (sidechain) turns are skipped on purpose, so the gauge always reflects *your* context, never a delegate's.
+- **Context gauge** — uses the payload's `context_window.used_percentage` / `context_window_size` directly when present. On older Claude Code versions without that field, it falls back to reading the **last main-thread assistant turn** from your transcript and summing its input-side tokens (`input + cache_creation + cache_read`). Sub-agent (sidechain) turns are skipped on purpose, so the gauge always reflects *your* context, never a delegate's.
+- **Rate limit bars** — read straight from `rate_limits.five_hour` / `rate_limits.seven_day` when your plan reports them. There's no monthly window in the payload, so `glint` doesn't fabricate one.
 
 ## Configuration
 
@@ -74,6 +76,7 @@ Sub-agent (sidechain) turns are skipped on purpose, so the gauge always reflects
 - **Colors** — the `# 256-color palette` block at the top maps every segment to an xterm-256 code.
 - **Cost thresholds** — `money_color = GREEN if money < 1 else GOLD if money < 5 else RED`.
 - **Context bands** — `gc = GREEN if pct < 0.6 else YELLOW if pct < 0.85 else RED`.
+- **Compact threshold** — `if (100 - pct * 100) <= 30:` in the context gauge segment.
 - **Gauge width** — the `width` arg of `gauge()`.
 - **Icons** — emoji are used so they render on any terminal without a Nerd Font. Swap them for Nerd Font glyphs if you have one installed.
 
