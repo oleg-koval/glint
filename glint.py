@@ -3,7 +3,7 @@
 
 Reads the Status hook JSON on stdin and prints one ANSI-colored line:
 
-  ✻ S4.6   📁 my-repo   🌿 main ●3 ↑1   💰 $0.42 · 4m   +1.2k/-340   🧠 36% ▕███░░░░░▏ 357k/1.0M   ⏱5h 63%▕███░░▏ 📅7d 10%▕█░░░░▏
+  ✻ F5   📁 my-repo   🌿 main ●3 ↑1   💰 $0.42 · 4m   +1.2k/-340   🧠 36% ▕███░░░░░▏ 357k/1.0M   ♻️ 94%   ⏱5h 63%▕███░░▏ ↻1h07m 📅7d 10%▕█░░░░▏ ↻2.3d
 
 Every segment degrades gracefully: a missing field means the segment is omitted,
 never an error. A crash falls back to a minimal badge so the bar never goes blank.
@@ -88,17 +88,17 @@ def tok_h(n: int) -> str:
     return str(n)
 
 
-def context_tokens(transcript_path: str) -> int:
-    """Current context size = input-side tokens of the most recent assistant turn.
+def context_usage(transcript_path: str) -> tuple[int, int]:
+    """(total input-side tokens, cache-read tokens) of the last assistant turn.
 
     Reads the transcript JSONL backwards and returns the first usage block found
-    on the main thread (input + cache_creation + cache_read). 0 if unavailable.
+    on the main thread. (0, 0) if unavailable.
     """
     try:
         with open(transcript_path, "rb") as f:
             lines = f.readlines()
     except Exception:
-        return 0
+        return 0, 0
     for line in reversed(lines):
         try:
             o = json.loads(line)
@@ -110,12 +110,38 @@ def context_tokens(transcript_path: str) -> int:
             continue
         u = (o.get("message") or {}).get("usage") or o.get("usage")
         if u:
-            return (
+            cached = int(u.get("cache_read_input_tokens", 0))
+            total = (
                 int(u.get("input_tokens", 0))
                 + int(u.get("cache_creation_input_tokens", 0))
-                + int(u.get("cache_read_input_tokens", 0))
+                + cached
             )
-    return 0
+            return total, cached
+    return 0, 0
+
+
+def reset_eta(value) -> str:
+    """Human ETA until a rate-limit reset. Accepts epoch seconds or ISO-8601."""
+    import datetime as dt
+    try:
+        if isinstance(value, (int, float)):
+            target = dt.datetime.fromtimestamp(value, dt.timezone.utc)
+        elif isinstance(value, str):
+            target = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if target.tzinfo is None:
+                target = target.replace(tzinfo=dt.timezone.utc)
+        else:
+            return ""
+        left = (target - dt.datetime.now(dt.timezone.utc)).total_seconds()
+        if left <= 0:
+            return ""
+        if left < 3600:
+            return f"{int(left // 60)}m"
+        if left < 86400:
+            return f"{int(left // 3600)}h{int(left % 3600 // 60):02d}m"
+        return f"{left / 86400:.1f}d"
+    except Exception:
+        return ""
 
 
 def gauge(pct: float, width: int = 8) -> str:
@@ -181,14 +207,15 @@ def main() -> None:
         segments.append(f"{la}{c('/', DIM)}{lr}")
 
     # ── Live context gauge ──
+    tx_tokens, tx_cached = context_usage(d.get("transcript_path") or "")
     cw = d.get("context_window") or {}
     used_pct = cw.get("used_percentage")
     limit = cw.get("context_window_size")
     if isinstance(used_pct, (int, float)) and limit:
         pct = min(max(used_pct / 100, 0.0), 1.0)
-        tokens = cw.get("total_input_tokens") or 0
+        tokens = cw.get("total_input_tokens") or tx_tokens
     else:
-        tokens = context_tokens(d.get("transcript_path") or "")
+        tokens = tx_tokens
         # 200k default; auto-bump to 1M when clearly on the long-context beta.
         limit = 1_000_000 if (tokens > 200_000 or d.get("exceeds_200k_tokens")) else 200_000
         pct = min(tokens / limit, 1.0) if limit else 0.0
@@ -200,20 +227,34 @@ def main() -> None:
             + " " + c(gauge(pct), gc)
             + " " + c(f"{tok_h(tokens)}/{tok_h(limit)}", DIM)
         )
-        # Remaining budget has dropped into the compact-soon zone.
-        if (100 - pct * 100) <= 30:
-            seg += "  " + c("⚠ compact", RED, bold=True)
+        # Approaching auto-compact: show how much runway is actually left.
+        headroom = int(limit * (1 - pct))
+        if pct >= 0.85:
+            seg += "  " + c(f"⚠ {tok_h(headroom)} left", RED, bold=True)
+        elif pct >= 0.7:
+            seg += "  " + c(f"→ {tok_h(headroom)} left", YELLOW)
         segments.append(seg)
+
+    # ── Prompt-cache efficiency (cache reads are ~10x cheaper than fresh input) ──
+    if tx_tokens > 0:
+        ratio = tx_cached / tx_tokens
+        rc = GREEN if ratio >= 0.8 else YELLOW if ratio >= 0.5 else RED
+        segments.append("♻️ " + c(f"{ratio * 100:.0f}%", rc))
 
     # ── Rate limit bars (5h session / 7d weekly) ──
     rl = d.get("rate_limits") or {}
     rl_bits = []
     for key, icon, label in (("five_hour", "⏱", "5h"), ("seven_day", "📅", "7d")):
-        used = (rl.get(key) or {}).get("used_percentage")
+        entry = rl.get(key) or {}
+        used = entry.get("used_percentage")
         if isinstance(used, (int, float)):
             rpct = min(max(used / 100, 0.0), 1.0)
             rc = GREEN if rpct < 0.6 else YELLOW if rpct < 0.85 else RED
-            rl_bits.append(f"{icon}{label} " + c(f"{used:.0f}%", rc) + c(gauge(rpct, width=5), rc))
+            bit = f"{icon}{label} " + c(f"{used:.0f}%", rc) + c(gauge(rpct, width=5), rc)
+            eta = reset_eta(entry.get("resets_at"))
+            if eta:
+                bit += c(f" ↻{eta}", DIM)
+            rl_bits.append(bit)
     if rl_bits:
         segments.append(" ".join(rl_bits))
 

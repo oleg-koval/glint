@@ -49,9 +49,9 @@ def test_human_dur():
     assert glint.human_dur(3_660_000) == "1h01m"
 
 
-# ── context_tokens reads main-thread assistant turns only ─────────────────────
+# ── context_usage reads main-thread assistant turns only ──────────────────────
 
-def test_context_tokens_skips_sidechain():
+def test_context_usage_skips_sidechain():
     with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False) as f:
         f.write(json.dumps({"type": "assistant", "isSidechain": True,
                             "message": {"usage": {"cache_read_input_tokens": 999_999}}}) + "\n")
@@ -60,10 +60,28 @@ def test_context_tokens_skips_sidechain():
                                                   "cache_creation_input_tokens": 5,
                                                   "cache_read_input_tokens": 100}}}) + "\n")
         path = f.name
-    assert glint.context_tokens(path) == 115  # main-thread turn, not the sidechain
+    # main-thread turn, not the sidechain; second value is the cache-read share
+    assert glint.context_usage(path) == (115, 100)
 
-def test_context_tokens_missing_file():
-    assert glint.context_tokens("/nope/does/not/exist.jsonl") == 0
+def test_context_usage_missing_file():
+    assert glint.context_usage("/nope/does/not/exist.jsonl") == (0, 0)
+
+
+# ── reset_eta parses epoch and ISO-8601, hides the past ────────────────────────
+
+def test_reset_eta_iso_future():
+    import datetime as dt
+    t = dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=2, minutes=10)
+    assert glint.reset_eta(t.isoformat()).startswith("2h")
+
+def test_reset_eta_epoch_future():
+    import time
+    assert glint.reset_eta(time.time() + 120) == "1m"
+
+def test_reset_eta_past_and_garbage_are_empty():
+    assert glint.reset_eta(0) == ""
+    assert glint.reset_eta("not-a-date") == ""
+    assert glint.reset_eta(None) == ""
 
 
 # ── end-to-end render, graceful degradation ───────────────────────────────────
@@ -105,21 +123,39 @@ def test_context_window_field_used_when_present():
     assert "75%" in out
     assert "750k/1.0M" in out
 
-def test_compact_indicator_shows_below_30pct_remaining():
+def test_headroom_countdown_shows_below_30pct_remaining():
     out = render({
         "model": {"display_name": "Sonnet 5"}, "cwd": "/tmp",
         "context_window": {"total_input_tokens": 700_000, "context_window_size": 1_000_000,
                             "used_percentage": 70, "remaining_percentage": 30},
     })
-    assert "compact" in out
+    assert "left" in out and "300k" in out
 
-def test_compact_indicator_hidden_above_30pct_remaining():
+def test_headroom_countdown_hidden_above_30pct_remaining():
     out = render({
         "model": {"display_name": "Sonnet 5"}, "cwd": "/tmp",
         "context_window": {"total_input_tokens": 690_000, "context_window_size": 1_000_000,
                             "used_percentage": 69, "remaining_percentage": 31},
     })
-    assert "compact" not in out
+    assert "left" not in out
+
+
+# ── cache-hit ratio segment ────────────────────────────────────────────────────
+
+def test_cache_ratio_from_transcript():
+    with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False) as f:
+        f.write(json.dumps({"type": "assistant",
+                            "message": {"usage": {"input_tokens": 10,
+                                                  "cache_creation_input_tokens": 10,
+                                                  "cache_read_input_tokens": 80}}}) + "\n")
+        path = f.name
+    out = render({"model": {"display_name": "Sonnet 5"}, "cwd": "/tmp",
+                  "transcript_path": path})
+    assert "80%" in out  # ♻️ cache-hit ratio
+
+def test_cache_ratio_hidden_without_transcript():
+    out = render({"model": {"display_name": "Sonnet 5"}, "cwd": "/tmp"})
+    assert "♻" not in out
 
 
 # ── rate limit bars (5h session / 7d weekly) ───────────────────────────────────

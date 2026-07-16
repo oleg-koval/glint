@@ -35,8 +35,9 @@ One Python file. Zero dependencies. ~75 ms per render. Never crashes your status
 | 🌿 **Git** | `main ●3 ↑1 ↓2` | Branch + uncommitted count + ahead/behind upstream. **Green when clean, yellow when dirty** |
 | 💰 **Cost · time** | `$0.42 · 4m` | Session spend and duration. **Green < $1, gold < $5, red beyond** |
 | **Lines** | `+1.2k/-340` | Lines added / removed this session, `k`-shortened |
-| 🧠 **Context gauge** | `36% ▕███░░░░░▏ 357k/1.0M` | **Live** token usage. Gradient **green → yellow → red** as you fill up. When remaining budget drops to ≤30%, a bold `⚠ compact` badge appears so you compact before you're forced to |
-| ⏱📅 **Rate limits** | `⏱5h 63%▕███░░▏ 📅7d 10%▕█░░░░▏` | Session (5h) and weekly (7d) rate-limit usage, same green → yellow → red gradient. Hidden if your plan doesn't report them |
+| 🧠 **Context gauge** | `75% ▕██████░░▏ 150k/200k → 50k left` | **Live** token usage. Gradient **green → yellow → red** as you fill up. From 70% a `→ 50k left` runway countdown appears; from 85% it turns into a bold red `⚠ 12k left` so you compact before you're forced to |
+| ♻️ **Cache hit** | `♻️ 94%` | Share of your context served from prompt cache (cache reads are ~10x cheaper than fresh input). **Green ≥ 80%, yellow ≥ 50%, red below** |
+| ⏱📅 **Rate limits** | `⏱5h 63%▕███░░▏ ↻1h07m 📅7d 10%▕█░░░░▏ ↻2.3d` | Session (5h) and weekly (7d) rate-limit usage, same gradient, plus `↻` time until each window resets. Hidden if your plan doesn't report them |
 
 Every segment is independent and **degrades gracefully** — no git repo hides the branch, no cost data hides the money, missing rate-limit data hides the bars. A hard failure falls back to a bare `✻ Claude` so your prompt is never blank.
 
@@ -76,7 +77,8 @@ Claude Code runs your `statusLine.command` on every render and pipes it a JSON b
 - **Colors** — the `# 256-color palette` block at the top maps every segment to an xterm-256 code.
 - **Cost thresholds** — `money_color = GREEN if money < 1 else GOLD if money < 5 else RED`.
 - **Context bands** — `gc = GREEN if pct < 0.6 else YELLOW if pct < 0.85 else RED`.
-- **Compact threshold** — `if (100 - pct * 100) <= 30:` in the context gauge segment.
+- **Runway thresholds** — `pct >= 0.85` (red `⚠ …left`) and `pct >= 0.7` (yellow `→ …left`) in the context gauge segment.
+- **Cache-hit bands** — `ratio >= 0.8` green, `>= 0.5` yellow in the cache segment.
 - **Gauge width** — the `width` arg of `gauge()`.
 - **Icons** — emoji are used so they render on any terminal without a Nerd Font. Swap them for Nerd Font glyphs if you have one installed.
 
