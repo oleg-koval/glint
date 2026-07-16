@@ -144,6 +144,54 @@ def test_headroom_countdown_hidden_above_30pct_remaining():
     })
     assert "left" not in out
 
+def test_reported_window_size_wins_over_the_200k_guess():
+    # used_percentage is null until the first assistant turn, but the reported
+    # size is already authoritative — a 1M session must not be drawn against 200k.
+    with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False) as f:
+        f.write(json.dumps({"type": "assistant",
+                            "message": {"usage": {"input_tokens": 150_000}}}) + "\n")
+        path = f.name
+    out = render({
+        "model": {"display_name": "Opus 4.8"}, "cwd": "/tmp", "transcript_path": path,
+        "context_window": {"context_window_size": 1_000_000, "used_percentage": None,
+                            "total_input_tokens": 0},
+    })
+    assert "150k/1.0M" in out
+    assert "15%" in out
+
+def test_window_size_guessed_when_not_reported():
+    out = render({
+        "model": {"display_name": "Sonnet 5"}, "cwd": "/tmp",
+        "context_window": {"total_input_tokens": 50_000},
+    })
+    assert "50k/200k" in out
+
+
+# ── effort ladder and fast mode ────────────────────────────────────────────────
+
+def test_effort_badge_renders_each_level():
+    for level, mark in (("low", "L"), ("medium", "M"), ("high", "H"),
+                        ("xhigh", "X"), ("max", "MAX")):
+        out = render({"model": {"display_name": "Opus 4.8"}, "cwd": "/tmp",
+                      "effort": {"level": level}})
+        assert mark in out, f"{level} → {mark}"
+
+def test_effort_badge_hidden_when_model_has_no_effort():
+    # absent means the model doesn't support effort — not that it's "high"
+    out = render({"model": {"display_name": "Haiku 4.5"}, "cwd": "/tmp"})
+    assert "H4.5 " not in out
+
+def test_effort_badge_ignores_unknown_level():
+    out = render({"model": {"display_name": "Opus 4.8"}, "cwd": "/tmp",
+                  "effort": {"level": "turbo"}})
+    assert "turbo" not in out
+
+def test_fast_mode_marker_shows_and_hides():
+    payload = {"model": {"display_name": "Opus 4.8"}, "cwd": "/tmp"}
+    assert "⏩" in render({**payload, "fast_mode": True})
+    assert "⏩" not in render({**payload, "fast_mode": False})
+    assert "⏩" not in render(payload)
+
 
 # ── pace: projected quota burn vs window elapsed ───────────────────────────────
 
@@ -189,6 +237,15 @@ def test_worktree_shown_when_it_differs_from_directory():
         "workspace": {"current_dir": "/tmp", "git_worktree": "/repos/feature-x"},
     })
     assert "feature-x" in out
+
+def test_worktree_read_from_top_level_field():
+    # Claude Code 2.1.x reports the worktree directly; no git call needed.
+    out = render({
+        "model": {"display_name": "Sonnet 5"},
+        "workspace": {"current_dir": "/tmp"},
+        "worktree": {"name": "feature-y", "path": "/repos/feature-y", "branch": "feature-y"},
+    })
+    assert "feature-y" in out
 
 def test_worktree_hidden_when_same_as_directory():
     out = render({

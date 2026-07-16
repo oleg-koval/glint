@@ -27,7 +27,7 @@ YELLOW = 179     # git dirty / mid cost
 RED = 174        # behind / expensive / removed
 GOLD = 220       # cost
 DIM = 244        # separators, labels
-PURPLE = 141     # reserved
+PURPLE = 141     # worktree
 
 
 def c(text: str, color: int, *, bold: bool = False) -> str:
@@ -78,6 +78,18 @@ def model_short(name: str) -> str:
             m = re.search(r"(\d+(?:[.\-]\d+)?)", n[low.index(fam) + len(fam):])
             return f"{initial}{m.group(1).replace('-', '.')}" if m else initial
     return n or name
+
+
+# reasoning effort → (badge, color), ordered low→max as Claude Code exposes it.
+# Colored by what it costs you, so the badge earns its space rather than just
+# restating a setting.
+_EFFORT = {
+    "low": ("L", GREEN),
+    "medium": ("M", GREEN),
+    "high": ("H", GOLD),
+    "xhigh": ("X", RED),
+    "max": ("MAX", RED),
+}
 
 
 def tok_h(n: int) -> str:
@@ -180,9 +192,17 @@ def main() -> None:
 
     segments: list[str] = []
 
-    # ── Model badge ──
+    # ── Model badge, with reasoning effort and fast mode ──
     model = (d.get("model") or {}).get("display_name") or (d.get("model") or {}).get("id") or "Claude"
-    segments.append(c("✻ ", CORAL, bold=True) + c(model_short(model), CORAL, bold=True))
+    badge = c("✻ ", CORAL, bold=True) + c(model_short(model), CORAL, bold=True)
+    # Only sent for models that actually support effort — absent is not "high".
+    level = str((d.get("effort") or {}).get("level") or "").lower()
+    if level in _EFFORT:
+        mark, ec = _EFFORT[level]
+        badge += " " + c(mark, ec, bold=level in ("xhigh", "max"))
+    if d.get("fast_mode"):
+        badge += " ⏩"
+    segments.append(badge)
 
     # ── Directory ──
     cwd = (d.get("workspace") or {}).get("current_dir") or d.get("cwd") or os.getcwd()
@@ -191,7 +211,7 @@ def main() -> None:
     segments.append("📁 " + c(label, BLUE))
 
     # ── Worktree ── (only when it adds information the directory segment lacks)
-    wt = (d.get("workspace") or {}).get("git_worktree")
+    wt = (d.get("worktree") or {}).get("name") or (d.get("workspace") or {}).get("git_worktree")
     if not wt:
         # Older Claude Code has no such field: a linked worktree is one whose
         # private git dir differs from the repo's common dir.
@@ -245,14 +265,16 @@ def main() -> None:
     cw = d.get("context_window") or {}
     used_pct = cw.get("used_percentage")
     limit = cw.get("context_window_size")
-    if isinstance(used_pct, (int, float)) and limit:
-        pct = min(max(used_pct / 100, 0.0), 1.0)
-        tokens = cw.get("total_input_tokens") or tx_tokens
-    else:
-        tokens = tx_tokens
-        # 200k default; auto-bump to 1M when clearly on the long-context beta.
+    tokens = cw.get("total_input_tokens") or tx_tokens
+    # The reported size already accounts for a 1M window, so trust it whenever
+    # it's there — used_percentage is null until the first turn, and guessing the
+    # limit then would draw a 1M session against 200k.
+    if not isinstance(limit, (int, float)) or limit <= 0:
         limit = 1_000_000 if (tokens > 200_000 or d.get("exceeds_200k_tokens")) else 200_000
-        pct = min(tokens / limit, 1.0) if limit else 0.0
+    if isinstance(used_pct, (int, float)):
+        pct = min(max(used_pct / 100, 0.0), 1.0)
+    else:
+        pct = min(tokens / limit, 1.0)
 
     if tokens > 0:
         gc = GREEN if pct < 0.6 else YELLOW if pct < 0.85 else RED
