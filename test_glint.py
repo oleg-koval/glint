@@ -83,6 +83,11 @@ def test_reset_eta_past_and_garbage_are_empty():
     assert glint.reset_eta("not-a-date") == ""
     assert glint.reset_eta(None) == ""
 
+def test_seconds_until_past_and_garbage_are_none():
+    assert glint.seconds_until(0) is None
+    assert glint.seconds_until("nope") is None
+    assert glint.seconds_until(None) is None
+
 
 # ── end-to-end render, graceful degradation ───────────────────────────────────
 
@@ -138,6 +143,59 @@ def test_headroom_countdown_hidden_above_30pct_remaining():
                             "used_percentage": 69, "remaining_percentage": 31},
     })
     assert "left" not in out
+
+
+# ── pace: projected quota burn vs window elapsed ───────────────────────────────
+
+def test_pace_on_track_when_burn_matches_clock():
+    # half the 5h window left, half the quota used → exactly on pace
+    assert abs(glint.pace(50, 2.5 * 3600, 5 * 3600) - 1.0) < 0.01
+
+def test_pace_flags_burning_hot():
+    # 80% used with half the window left → would need 160% of quota
+    assert abs(glint.pace(80, 2.5 * 3600, 5 * 3600) - 1.6) < 0.01
+
+def test_pace_none_when_window_too_young():
+    # 4.9h left of a 5h window — too early to extrapolate
+    assert glint.pace(1, 4.9 * 3600, 5 * 3600) is None
+
+def test_pace_none_without_reset_time():
+    assert glint.pace(50, None, 5 * 3600) is None
+
+def test_pace_marker_renders_when_hot():
+    import datetime as dt
+    soon = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=1)).isoformat()
+    out = render({
+        "model": {"display_name": "Sonnet 5"}, "cwd": "/tmp",
+        "rate_limits": {"five_hour": {"used_percentage": 90, "resets_at": soon}},
+    })
+    assert "⚡" in out
+
+def test_pace_marker_hidden_when_on_track():
+    import datetime as dt
+    soon = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=1)).isoformat()
+    out = render({
+        "model": {"display_name": "Sonnet 5"}, "cwd": "/tmp",
+        "rate_limits": {"five_hour": {"used_percentage": 50, "resets_at": soon}},
+    })
+    assert "⚡" not in out
+
+
+# ── worktree segment ───────────────────────────────────────────────────────────
+
+def test_worktree_shown_when_it_differs_from_directory():
+    out = render({
+        "model": {"display_name": "Sonnet 5"},
+        "workspace": {"current_dir": "/tmp", "git_worktree": "/repos/feature-x"},
+    })
+    assert "feature-x" in out
+
+def test_worktree_hidden_when_same_as_directory():
+    out = render({
+        "model": {"display_name": "Sonnet 5"},
+        "workspace": {"current_dir": "/tmp/thing", "git_worktree": "/tmp/thing"},
+    })
+    assert "🌳" not in out
 
 
 # ── cache-hit ratio segment ────────────────────────────────────────────────────

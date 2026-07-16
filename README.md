@@ -32,12 +32,14 @@ One Python file. Zero dependencies. ~75 ms per render. Never crashes your status
 |---------|-------|--------|
 | ✻ **Model** | `S4.6` | Active model, coral & bold, abbreviated to a family letter + version (`Sonnet 4.6` → `S4.6`, `Opus 4.8` → `O4.8`) |
 | 📁 **Directory** | `my-repo` | Workspace basename, `~` for home |
+| 🌳 **Worktree** | `wt-refactor` | Active git worktree — from `workspace.git_worktree`, or detected via git on older versions. Hidden unless it differs from the directory segment, so normal repos stay quiet |
 | 🌿 **Git** | `main ●3 ↑1 ↓2` | Branch + uncommitted count + ahead/behind upstream. **Green when clean, yellow when dirty** |
 | 💰 **Cost · time** | `$0.42 · 4m` | Session spend and duration. **Green < $1, gold < $5, red beyond** |
 | **Lines** | `+1.2k/-340` | Lines added / removed this session, `k`-shortened |
 | 🧠 **Context gauge** | `75% ▕██████░░▏ 150k/200k → 50k left` | **Live** token usage. Gradient **green → yellow → red** as you fill up. From 70% a `→ 50k left` runway countdown appears; from 85% it turns into a bold red `⚠ 12k left` so you compact before you're forced to |
 | ♻️ **Cache hit** | `♻️ 94%` | Share of your context served from prompt cache (cache reads are ~10x cheaper than fresh input). **Green ≥ 80%, yellow ≥ 50%, red below** |
-| ⏱📅 **Rate limits** | `⏱5h 63%▕███░░▏ ↻1h07m 📅7d 10%▕█░░░░▏ ↻2.3d` | Session (5h) and weekly (7d) rate-limit usage, same gradient, plus `↻` time until each window resets. Hidden if your plan doesn't report them |
+| ⏱📅 **Rate limits** | `⏱5h 88%▕████░▏ ↻59m ⚡110%` | Session (5h) and weekly (7d) rate-limit usage, same gradient, plus `↻` time until each window resets. Hidden if your plan doesn't report them |
+| ⚡ **Pace** | `⚡110%` | Appears **only when you're burning faster than the window elapses**: the share of quota you'd need by reset at the current rate. `⚡110%` = you run out ~10% early. Yellow past 105%, bold red past 150% |
 
 Every segment is independent and **degrades gracefully** — no git repo hides the branch, no cost data hides the money, missing rate-limit data hides the bars. A hard failure falls back to a bare `✻ Claude` so your prompt is never blank.
 
@@ -69,6 +71,8 @@ Claude Code runs your `statusLine.command` on every render and pipes it a JSON b
 
 - **Context gauge** — uses the payload's `context_window.used_percentage` / `context_window_size` directly when present. On older Claude Code versions without that field, it falls back to reading the **last main-thread assistant turn** from your transcript and summing its input-side tokens (`input + cache_creation + cache_read`). Sub-agent (sidechain) turns are skipped on purpose, so the gauge always reflects *your* context, never a delegate's.
 - **Rate limit bars** — read straight from `rate_limits.five_hour` / `rate_limits.seven_day` when your plan reports them. There's no monthly window in the payload, so `glint` doesn't fabricate one.
+- **Pace** — compares quota used against how much of the window has elapsed (derived from `resets_at`), and projects that rate forward to the reset. It stays hidden while you're on track, and for the first 5% of a window where a handful of tokens would extrapolate to nonsense.
+- **Worktree** — prefers the payload's `workspace.git_worktree`; without it, a linked worktree is detected by comparing `--absolute-git-dir` against `--git-common-dir`.
 
 ## Configuration
 
@@ -79,6 +83,7 @@ Claude Code runs your `statusLine.command` on every render and pipes it a JSON b
 - **Context bands** — `gc = GREEN if pct < 0.6 else YELLOW if pct < 0.85 else RED`.
 - **Runway thresholds** — `pct >= 0.85` (red `⚠ …left`) and `pct >= 0.7` (yellow `→ …left`) in the context gauge segment.
 - **Cache-hit bands** — `ratio >= 0.8` green, `>= 0.5` yellow in the cache segment.
+- **Pace sensitivity** — `p > 1.05` to show the marker, `p > 1.5` to turn it bold red; `elapsed < 0.05` is the young-window cutoff in `pace()`.
 - **Gauge width** — the `width` arg of `gauge()`.
 - **Icons** — emoji are used so they render on any terminal without a Nerd Font. Swap them for Nerd Font glyphs if you have one installed.
 

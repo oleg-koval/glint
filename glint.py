@@ -120,10 +120,12 @@ def context_usage(transcript_path: str) -> tuple[int, int]:
     return 0, 0
 
 
-def reset_eta(value) -> str:
-    """Human ETA until a rate-limit reset. Accepts epoch seconds or ISO-8601."""
+def seconds_until(value):
+    """Seconds until an epoch-seconds or ISO-8601 instant. None if unparseable/past."""
     import datetime as dt
     try:
+        if isinstance(value, bool) or value is None:
+            return None
         if isinstance(value, (int, float)):
             target = dt.datetime.fromtimestamp(value, dt.timezone.utc)
         elif isinstance(value, str):
@@ -131,17 +133,37 @@ def reset_eta(value) -> str:
             if target.tzinfo is None:
                 target = target.replace(tzinfo=dt.timezone.utc)
         else:
-            return ""
+            return None
         left = (target - dt.datetime.now(dt.timezone.utc)).total_seconds()
-        if left <= 0:
-            return ""
-        if left < 3600:
-            return f"{int(left // 60)}m"
-        if left < 86400:
-            return f"{int(left // 3600)}h{int(left % 3600 // 60):02d}m"
-        return f"{left / 86400:.1f}d"
+        return left if left > 0 else None
     except Exception:
+        return None
+
+
+def reset_eta(value) -> str:
+    """Human ETA until a rate-limit reset. Accepts epoch seconds or ISO-8601."""
+    left = seconds_until(value)
+    if left is None:
         return ""
+    if left < 3600:
+        return f"{int(left // 60)}m"
+    if left < 86400:
+        return f"{int(left // 3600)}h{int(left % 3600 // 60):02d}m"
+    return f"{left / 86400:.1f}d"
+
+
+def pace(used_pct: float, secs_left, window_secs: int):
+    """Projected share of quota needed by reset if the current burn rate holds.
+
+    1.4 means "at this rate you'd need 140% of the window's quota" — i.e. you run
+    out before it resets. None when the window is too young to extrapolate from.
+    """
+    if secs_left is None:
+        return None
+    elapsed = 1 - min(max(secs_left / window_secs, 0.0), 1.0)
+    if elapsed < 0.05:  # too early — a few tokens would project to absurd numbers
+        return None
+    return (used_pct / 100) / elapsed
 
 
 def gauge(pct: float, width: int = 8) -> str:
@@ -167,6 +189,18 @@ def main() -> None:
     home = os.path.expanduser("~")
     label = "~" if cwd == home else os.path.basename(cwd.rstrip("/")) or cwd
     segments.append("📁 " + c(label, BLUE))
+
+    # ── Worktree ── (only when it adds information the directory segment lacks)
+    wt = (d.get("workspace") or {}).get("git_worktree")
+    if not wt:
+        # Older Claude Code has no such field: a linked worktree is one whose
+        # private git dir differs from the repo's common dir.
+        gd, common = git(cwd, "rev-parse", "--absolute-git-dir"), git(cwd, "rev-parse", "--git-common-dir")
+        if gd and common and os.path.abspath(gd) != os.path.abspath(common):
+            wt = os.path.basename(git(cwd, "rev-parse", "--show-toplevel") or "")
+    wt = os.path.basename(str(wt).rstrip("/")) if wt else ""
+    if wt and wt != label:
+        segments.append("🌳 " + c(wt, PURPLE))
 
     # ── Git ──
     branch = git(cwd, "rev-parse", "--abbrev-ref", "HEAD")
@@ -244,16 +278,24 @@ def main() -> None:
     # ── Rate limit bars (5h session / 7d weekly) ──
     rl = d.get("rate_limits") or {}
     rl_bits = []
-    for key, icon, label in (("five_hour", "⏱", "5h"), ("seven_day", "📅", "7d")):
+    for key, icon, name, window in (
+        ("five_hour", "⏱", "5h", 5 * 3600),
+        ("seven_day", "📅", "7d", 7 * 86400),
+    ):
         entry = rl.get(key) or {}
         used = entry.get("used_percentage")
         if isinstance(used, (int, float)):
             rpct = min(max(used / 100, 0.0), 1.0)
             rc = GREEN if rpct < 0.6 else YELLOW if rpct < 0.85 else RED
-            bit = f"{icon}{label} " + c(f"{used:.0f}%", rc) + c(gauge(rpct, width=5), rc)
+            bit = f"{icon}{name} " + c(f"{used:.0f}%", rc) + c(gauge(rpct, width=5), rc)
+            secs_left = seconds_until(entry.get("resets_at"))
             eta = reset_eta(entry.get("resets_at"))
             if eta:
                 bit += c(f" ↻{eta}", DIM)
+            # Burning faster than the window elapses → you'd hit the cap early.
+            p = pace(used, secs_left, window)
+            if p is not None and p > 1.05:
+                bit += " " + c(f"⚡{p * 100:.0f}%", RED if p > 1.5 else YELLOW, bold=p > 1.5)
             rl_bits.append(bit)
     if rl_bits:
         segments.append(" ".join(rl_bits))
