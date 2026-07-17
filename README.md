@@ -77,6 +77,34 @@ Claude Code runs your `statusLine.command` on every render and pipes it a JSON b
 - **Worktree** — prefers the payload's `worktree.name`, falling back to `workspace.git_worktree`; without either, a linked worktree is detected by comparing `--absolute-git-dir` against `--git-common-dir`.
 - **Effort and fast mode** — read from `effort.level` and `fast_mode`. Effort is only sent for models that support it, so an absent value hides the badge rather than assuming a default.
 
+## Companion: compaction alert (`glint_alert.py`)
+
+The status line *shows* your context filling up; sometimes you want it to *tell* you. `glint_alert.py` is an optional [Stop hook](https://docs.claude.com/en/docs/claude-code/hooks) that fires a macOS notification + sound the moment context crosses **75%**, then once more at **90%** — and prints an inline reminder of exactly what to run. It's the same zero-dependency, never-crashes-your-session philosophy: any failure just means no alert.
+
+Grab the file and wire it into `~/.claude/settings.json` alongside your status line:
+
+```bash
+# 1. grab the hook (sits next to glint.py)
+curl -fsSL https://raw.githubusercontent.com/oleg-koval/glint/main/glint_alert.py -o ~/.claude/glint_alert.py
+```
+
+```jsonc
+// 2. add to ~/.claude/settings.json (merge with any existing hooks — don't replace)
+"hooks": {
+  "Stop": [
+    { "hooks": [ { "type": "command", "command": "python3 \"$HOME/.claude/glint_alert.py\"" } ] }
+  ]
+}
+```
+
+- **Where/what.** The alert names the exact command and where to type it — `/compact` in the Claude Code prompt (not the shell), or `/compact keep <what>` to steer what survives.
+- **Debounced.** Fires once per tier per session, so it never nags turn-to-turn; it re-alerts only when you escalate from 75% into 90%.
+- **Window-aware.** Auto-detects the 200k vs 1M context window, mirroring the gauge.
+- **Quiet mode.** Set `GLINT_ALERT_SILENT=1` to suppress the OS notification while keeping the inline reminder (also how the tests run).
+- **Not a compactor.** No hook can invoke `/compact` for you — this nudges; Claude Code's built-in auto-compact still backstops near the ceiling.
+
+Thresholds live in the `WARN_PCT` / `CRIT_PCT` constants at the top of the file. Uninstall by removing the `Stop` hook entry and deleting `~/.claude/glint_alert.py`.
+
 ## Configuration
 
 `glint` is intentionally a single readable file — tweak it directly:
