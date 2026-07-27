@@ -362,6 +362,67 @@ def test_narrow_render_does_not_exceed_the_window():
     assert "O5" in render(payload)  # still renders end-to-end
 
 
+# ── segment toggles ───────────────────────────────────────────────────────────
+def _render_env(payload: dict, env: dict) -> str:
+    import os as _os
+    e = {**_os.environ, **env}
+    p = subprocess.run(
+        [sys.executable, str(HERE / "glint.py")],
+        input=json.dumps(payload), capture_output=True, text=True, env=e,
+    )
+    assert p.returncode == 0, p.stderr
+    return p.stdout
+
+
+_TOGGLE_PAYLOAD = {
+    "model": {"display_name": "Opus 5"},
+    "cwd": "/tmp",
+    "cost": {"total_cost_usd": 4.20, "total_duration_ms": 60_000,
+             "total_lines_added": 12, "total_lines_removed": 3},
+    "rate_limits": {"five_hour": {"used_percentage": 50}},
+}
+
+
+def test_enabled_defaults_to_on_when_unset():
+    assert glint.enabled("NOPE_NOT_SET_ANYWHERE") is True
+
+
+def test_enabled_accepts_the_falsey_spellings():
+    import os as _os
+    for val, want in (("0", False), ("false", False), ("NO", False),
+                      ("off", False), ("1", True), ("yes", True), ("", True)):
+        _os.environ["GLINT_TOGGLETEST"] = val
+        try:
+            assert glint.enabled("TOGGLETEST") is want, (val, want)
+        finally:
+            del _os.environ["GLINT_TOGGLETEST"]
+
+
+def test_cost_hidden_when_toggled_off():
+    on = _render_env(_TOGGLE_PAYLOAD, {})
+    off = _render_env(_TOGGLE_PAYLOAD, {"GLINT_COST": "0"})
+    assert "4.20" in on and "4.20" not in off
+
+
+def test_lines_hidden_when_toggled_off():
+    off = _render_env(_TOGGLE_PAYLOAD, {"GLINT_LINES": "0"})
+    assert "+12" not in off
+
+
+def test_ratelimits_hidden_when_toggled_off():
+    on = _render_env(_TOGGLE_PAYLOAD, {})
+    off = _render_env(_TOGGLE_PAYLOAD, {"GLINT_RATELIMITS": "0"})
+    assert "5h" in on and "5h" not in off
+
+
+def test_model_badge_survives_every_toggle_off():
+    off = _render_env(_TOGGLE_PAYLOAD, {
+        "GLINT_COST": "0", "GLINT_LINES": "0", "GLINT_CACHE": "0",
+        "GLINT_RATELIMITS": "0", "GLINT_WORKTREE": "0",
+    })
+    assert "O5" in off
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in sorted(globals().items()):

@@ -51,6 +51,16 @@ def sep() -> str:
     return c("  ", DIM)
 
 
+def enabled(name: str) -> bool:
+    """Is segment `name` switched on? `GLINT_COST=0` hides the cost segment.
+
+    Off is any of 0/false/no/off; anything else (including unset) is on, so the
+    default stays "show everything" and a typo can't silently blank a segment.
+    """
+    v = os.environ.get(f"GLINT_{name}")
+    return True if v is None else v.strip().lower() not in ("0", "false", "no", "off")
+
+
 _ANSI = re.compile(r"\033\[[0-9;]*m")
 
 
@@ -303,7 +313,7 @@ def main() -> None:
         if gd and common and os.path.abspath(gd) != os.path.abspath(common):
             wt = os.path.basename(git(cwd, "rev-parse", "--show-toplevel") or "")
     wt = os.path.basename(str(wt).rstrip("/")) if wt else ""
-    if wt and wt != label:
+    if enabled("WORKTREE") and wt and wt != label:
         segments.append((PRIO_WORKTREE, "🌳 " + c(wt, PURPLE)))
 
     # ── Git ──
@@ -328,7 +338,7 @@ def main() -> None:
     # ── Cost · duration ──
     cost = d.get("cost") or {}
     money = cost.get("total_cost_usd")
-    if isinstance(money, (int, float)) and money > 0:
+    if enabled("COST") and isinstance(money, (int, float)) and money > 0:
         money_color = GREEN if money < 1 else GOLD if money < 5 else RED
         bits = ["💰 " + c(f"${money:.2f}", money_color)]
         dur = cost.get("total_duration_ms")
@@ -339,7 +349,7 @@ def main() -> None:
     # ── Lines changed ──
     added = cost.get("total_lines_added")
     removed = cost.get("total_lines_removed")
-    if added or removed:
+    if enabled("LINES") and (added or removed):
         la = c(f"+{human_lines(added or 0)}", GREEN)
         lr = c(f"-{human_lines(removed or 0)}", RED)
         segments.append((PRIO_LINES, f"{la}{c('/', DIM)}{lr}"))
@@ -376,13 +386,13 @@ def main() -> None:
         segments.append((PRIO_CONTEXT, seg))
 
     # ── Prompt-cache efficiency (cache reads are ~10x cheaper than fresh input) ──
-    if tx_tokens > 0:
+    if enabled("CACHE") and tx_tokens > 0:
         ratio = tx_cached / tx_tokens
         rc = GREEN if ratio >= 0.8 else YELLOW if ratio >= 0.5 else RED
         segments.append((PRIO_CACHE, "♻️ " + c(f"{ratio * 100:.0f}%", rc)))
 
     # ── Rate limit bars (5h session / 7d weekly) ──
-    rl = d.get("rate_limits") or {}
+    rl = d.get("rate_limits") or {} if enabled("RATELIMITS") else {}
     rl_bits = []
     for key, icon, name, window in (
         ("five_hour", "⏱", "5h", 5 * 3600),

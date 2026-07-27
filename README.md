@@ -81,7 +81,21 @@ Claude Code runs your `statusLine.command` on every render and pipes it a JSON b
 
 ## Configuration
 
-`glint` is intentionally a single readable file — tweak it directly:
+**Turn segments off without editing the file** — set an env var in your shell profile:
+
+```bash
+export GLINT_COST=0        # hide the cost segment
+export GLINT_LINES=0       # hide lines added/removed
+export GLINT_CACHE=0       # hide the cache-hit ratio
+export GLINT_RATELIMITS=0  # hide the 5h/7d bars
+export GLINT_WORKTREE=0    # hide the worktree segment
+```
+
+`0`, `false`, `no`, and `off` all mean off; anything else (including unset) means on, so a
+typo can't silently blank a segment. The model badge, directory, git, and context gauge have
+no toggle — they're the point of the bar.
+
+Everything else: `glint` is intentionally a single readable file — tweak it directly:
 
 - **Colors** — the `# 256-color palette` block at the top maps every segment to an xterm-256 code.
 - **Cost thresholds** — `money_color = GREEN if money < 1 else GOLD if money < 5 else RED`.
