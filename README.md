@@ -43,6 +43,8 @@ One Python file. Zero dependencies. ~75 ms per render. Never crashes your status
 | ⏱📅 **Rate limits** | `⏱5h 88%▕████░▏ ↻59m ⚡110%` | Session (5h) and weekly (7d) rate-limit usage, same gradient, plus `↻` time until each window resets. Hidden if your plan doesn't report them |
 | ⚡ **Pace** | `⚡110%` | Appears **only when you're burning faster than the window elapses**: the share of quota you'd need by reset at the current rate. `⚡110%` = you run out ~10% early. Yellow past 105%, bold red past 150% |
 
+**Narrow windows lose detail, not the line.** `glint` measures the terminal and drops the least important segments until the bar fits, instead of letting it clip mid-number. The sacrifice order is cost → lines → cache → rate limits → worktree → git → directory → context gauge; the model badge is never dropped. After trimming it puts back anything that still fits, so a small segment isn't lost just because a large one was measured first.
+
 Every segment is independent and **degrades gracefully** — no git repo hides the branch, no cost data hides the money, missing rate-limit data hides the bars. A hard failure falls back to a bare `✻ Claude` so your prompt is never blank.
 
 ## Installation
@@ -89,6 +91,7 @@ Claude Code runs your `statusLine.command` on every render and pipes it a JSON b
 - **Effort badges** — the `_EFFORT` map sets the letter and color for each level.
 - **Pace sensitivity** — `p > 1.05` to show the marker, `p > 1.5` to turn it bold red; `elapsed < 0.05` is the young-window cutoff in `pace()`.
 - **Gauge width** — the `width` arg of `gauge()`.
+- **Narrow-window priority** — the `PRIO_*` constants at the top set what gets dropped first (higher number = dropped sooner; `PRIO_MODEL = 0` is never dropped).
 - **Icons** — emoji are used so they render on any terminal without a Nerd Font. Swap them for Nerd Font glyphs if you have one installed.
 
 ## Requirements

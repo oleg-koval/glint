@@ -288,6 +288,80 @@ def test_rate_limits_hidden_when_absent():
     assert "5h" not in out and "7d" not in out
 
 
+# ── narrow-window fitting ─────────────────────────────────────────────────────
+def _seg(prio: int, width: int):
+    """A segment of exactly `width` visible cells at the given priority."""
+    return (prio, "x" * width)
+
+
+def test_vis_width_ignores_ansi():
+    assert glint.vis_width(glint.c("abc", glint.GREEN)) == 3
+
+
+def test_vis_width_counts_emoji_as_two_cells():
+    assert glint.vis_width("\U0001F4C1") == 2
+    assert glint.vis_width("\u267B\ufe0f") == 2  # pictograph + variation selector
+
+
+def test_fit_keeps_everything_when_it_already_fits():
+    segs = [_seg(0, 5), _seg(3, 5), _seg(8, 5)]
+    out = glint.fit(segs, 100)
+    assert glint.vis_width(out) == 5 * 3 + 2 * 2  # three segments, two separators
+
+
+def test_fit_drops_highest_priority_first():
+    segs = [_seg(0, 10), _seg(2, 10), _seg(8, 10)]
+    out = glint.fit(segs, 24)
+    assert glint.vis_width(out) <= 24
+
+
+def test_fit_never_drops_priority_zero():
+    segs = [_seg(0, 30), _seg(1, 30), _seg(8, 30)]
+    out = glint.fit(segs, 5)
+    assert glint.vis_width(out) == 30  # clips rather than blanking the bar
+
+
+def test_fit_readds_a_segment_that_still_fits():
+    # Greedy removal drops the small (prio 8) before the large (prio 5); once the
+    # large is gone the small fits again and must come back.
+    segs = [_seg(0, 10), _seg(5, 40), _seg(8, 5)]
+    out = glint.fit(segs, 20)
+    assert glint.vis_width(out) == 10 + 2 + 5
+
+
+def test_fit_preserves_original_segment_order():
+    segs = [(0, "aaa"), (8, "bbb"), (2, "ccc")]
+    plain = glint._ANSI.sub("", glint.fit(segs, 100))
+    assert plain.index("aaa") < plain.index("bbb") < plain.index("ccc")
+
+
+def test_term_width_falls_back_to_default_without_a_tty():
+    p = subprocess.run(
+        [sys.executable, "-c",
+         "import glint; print(glint.term_width(default=77))"],
+        capture_output=True, text=True, cwd=str(HERE),
+        env={"PATH": "/usr/bin:/bin", "PYTHONPATH": str(HERE)},
+        stdin=subprocess.DEVNULL,
+    )
+    assert p.returncode == 0, p.stderr
+    assert p.stdout.strip() == "77", p.stdout
+
+
+def test_narrow_render_does_not_exceed_the_window():
+    payload = {
+        "model": {"display_name": "Opus 5"},
+        "cwd": "/tmp",
+        "context_window": {"used_percentage": 12, "context_window_size": 1_000_000,
+                           "total_input_tokens": 115_000},
+        "cost": {"total_cost_usd": 0.42, "total_duration_ms": 3_900_000,
+                 "total_lines_added": 67, "total_lines_removed": 26},
+    }
+    for width in (30, 50, 80, 120):
+        segs = [_seg(0, 7)] + [_seg(i, 20) for i in range(1, 6)]
+        assert glint.vis_width(glint.fit(segs, width)) <= width, width
+    assert "O5" in render(payload)  # still renders end-to-end
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in sorted(globals().items()):

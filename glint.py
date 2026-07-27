@@ -18,6 +18,7 @@ import os
 import re
 import subprocess
 import sys
+import unicodedata
 
 # ── 256-color palette ─────────────────────────────────────────────────────────
 CORAL = 209      # model badge (Anthropic-ish)
@@ -29,6 +30,17 @@ GOLD = 220       # cost
 DIM = 244        # separators, labels
 PURPLE = 141     # worktree
 
+# ── Segment priority: dropped first when the window is narrow ──────────────
+PRIO_MODEL = 0       # never dropped
+PRIO_CONTEXT = 1
+PRIO_DIR = 2
+PRIO_GIT = 3
+PRIO_WORKTREE = 4
+PRIO_RATELIMIT = 5
+PRIO_CACHE = 6
+PRIO_LINES = 7
+PRIO_COST = 8        # dropped first
+
 
 def c(text: str, color: int, *, bold: bool = False) -> str:
     b = "1;" if bold else ""
@@ -37,6 +49,78 @@ def c(text: str, color: int, *, bold: bool = False) -> str:
 
 def sep() -> str:
     return c("  ", DIM)
+
+
+_ANSI = re.compile(r"\033\[[0-9;]*m")
+
+
+def vis_width(s: str) -> int:
+    """Rendered cell width: ANSI is invisible, emoji take two cells."""
+    w = 0
+    for ch in _ANSI.sub("", s):
+        o = ord(ch)
+        if o == 0xFE0F or unicodedata.combining(ch):
+            continue                      # variation selector / combining mark
+        if (0x1F300 <= o <= 0x1FAFF) or (0x2600 <= o <= 0x27BF) or (0x2B00 <= o <= 0x2BFF):
+            w += 2                        # pictographs render double-wide
+        else:
+            w += 1
+    return w
+
+
+def term_width(default: int = 120) -> int:
+    """Columns available. stdout is a pipe here, so ask the tty directly."""
+    for fd in (2, 1):
+        try:
+            cols = os.get_terminal_size(fd).columns
+            if cols > 0:
+                return cols
+        except Exception:
+            pass
+    try:
+        with open("/dev/tty") as tty:
+            cols = os.get_terminal_size(tty.fileno()).columns
+            if cols > 0:
+                return cols
+    except Exception:
+        pass
+    try:
+        cols = int(os.environ.get("COLUMNS") or 0)
+        if cols > 0:
+            return cols
+    except Exception:
+        pass
+    return default
+
+
+def fit(segments: list[tuple[int, str]], width: int) -> str:
+    """Join segments, dropping the least important until the line fits.
+
+    Each segment is (priority, text); HIGHER priority is dropped first, and
+    priority 0 is never dropped — a narrow window loses detail, not identity.
+    """
+    def render(items) -> str:
+        return sep().join(text for _, (_, text) in sorted(items))
+
+    keep = list(enumerate(segments))       # carry original index to keep order
+    dropped = []
+    while len(keep) > 1:
+        if vis_width(render(keep)) <= width:
+            break
+        worst = max(range(len(keep)), key=lambda i: keep[i][1][0])
+        if keep[worst][1][0] == 0:
+            break                          # only essentials left; let it clip
+        dropped.append(keep.pop(worst))
+
+    # Greedy removal can drop a small segment and then a large one that alone
+    # would have sufficed, wasting space. Put back whatever still fits, most
+    # important first.
+    for item in sorted(dropped, key=lambda it: it[1][0]):
+        trial = keep + [item]
+        if vis_width(render(trial)) <= width:
+            keep = trial
+
+    return render(keep)
 
 
 def git(dir_: str, *args: str) -> str:
@@ -190,7 +274,7 @@ def main() -> None:
     except Exception:
         d = {}
 
-    segments: list[str] = []
+    segments: list[tuple[int, str]] = []   # (priority, text); see fit()
 
     # ── Model badge, with reasoning effort and fast mode ──
     model = (d.get("model") or {}).get("display_name") or (d.get("model") or {}).get("id") or "Claude"
@@ -202,13 +286,13 @@ def main() -> None:
         badge += " " + c(mark, ec, bold=level in ("xhigh", "max"))
     if d.get("fast_mode"):
         badge += " ⏩"
-    segments.append(badge)
+    segments.append((PRIO_MODEL, badge))
 
     # ── Directory ──
     cwd = (d.get("workspace") or {}).get("current_dir") or d.get("cwd") or os.getcwd()
     home = os.path.expanduser("~")
     label = "~" if cwd == home else os.path.basename(cwd.rstrip("/")) or cwd
-    segments.append("📁 " + c(label, BLUE))
+    segments.append((PRIO_DIR, "📁 " + c(label, BLUE)))
 
     # ── Worktree ── (only when it adds information the directory segment lacks)
     wt = (d.get("worktree") or {}).get("name") or (d.get("workspace") or {}).get("git_worktree")
@@ -220,7 +304,7 @@ def main() -> None:
             wt = os.path.basename(git(cwd, "rev-parse", "--show-toplevel") or "")
     wt = os.path.basename(str(wt).rstrip("/")) if wt else ""
     if wt and wt != label:
-        segments.append("🌳 " + c(wt, PURPLE))
+        segments.append((PRIO_WORKTREE, "🌳 " + c(wt, PURPLE)))
 
     # ── Git ──
     branch = git(cwd, "rev-parse", "--abbrev-ref", "HEAD")
@@ -239,7 +323,7 @@ def main() -> None:
                 g += c(f" ↑{ahead}", GREEN)
             if behind != "0":
                 g += c(f" ↓{behind}", RED)
-        segments.append(g)
+        segments.append((PRIO_GIT, g))
 
     # ── Cost · duration ──
     cost = d.get("cost") or {}
@@ -250,7 +334,7 @@ def main() -> None:
         dur = cost.get("total_duration_ms")
         if isinstance(dur, (int, float)) and dur > 0:
             bits.append(c(human_dur(dur), DIM))
-        segments.append(c(" · ", DIM).join(bits))
+        segments.append((PRIO_COST, c(" · ", DIM).join(bits)))
 
     # ── Lines changed ──
     added = cost.get("total_lines_added")
@@ -258,7 +342,7 @@ def main() -> None:
     if added or removed:
         la = c(f"+{human_lines(added or 0)}", GREEN)
         lr = c(f"-{human_lines(removed or 0)}", RED)
-        segments.append(f"{la}{c('/', DIM)}{lr}")
+        segments.append((PRIO_LINES, f"{la}{c('/', DIM)}{lr}"))
 
     # ── Live context gauge ──
     tx_tokens, tx_cached = context_usage(d.get("transcript_path") or "")
@@ -289,13 +373,13 @@ def main() -> None:
             seg += "  " + c(f"⚠ {tok_h(headroom)} left", RED, bold=True)
         elif pct >= 0.7:
             seg += "  " + c(f"→ {tok_h(headroom)} left", YELLOW)
-        segments.append(seg)
+        segments.append((PRIO_CONTEXT, seg))
 
     # ── Prompt-cache efficiency (cache reads are ~10x cheaper than fresh input) ──
     if tx_tokens > 0:
         ratio = tx_cached / tx_tokens
         rc = GREEN if ratio >= 0.8 else YELLOW if ratio >= 0.5 else RED
-        segments.append("♻️ " + c(f"{ratio * 100:.0f}%", rc))
+        segments.append((PRIO_CACHE, "♻️ " + c(f"{ratio * 100:.0f}%", rc)))
 
     # ── Rate limit bars (5h session / 7d weekly) ──
     rl = d.get("rate_limits") or {}
@@ -320,9 +404,9 @@ def main() -> None:
                 bit += " " + c(f"⚡{p * 100:.0f}%", RED if p > 1.5 else YELLOW, bold=p > 1.5)
             rl_bits.append(bit)
     if rl_bits:
-        segments.append(" ".join(rl_bits))
+        segments.append((PRIO_RATELIMIT, " ".join(rl_bits)))
 
-    sys.stdout.write(sep().join(segments))
+    sys.stdout.write(fit(segments, term_width() - 2))
 
 
 if __name__ == "__main__":
