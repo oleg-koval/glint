@@ -20,7 +20,7 @@ Repo: https://github.com/oleg-koval/glint
 
 from __future__ import annotations
 
-__version__ = "1.2.0"   # keep in step with CHANGELOG.md and the git tag
+__version__ = "1.3.0"   # keep in step with CHANGELOG.md and the git tag
 
 import hashlib
 import json
@@ -42,6 +42,7 @@ RED = 174        # behind / expensive / removed
 GOLD = 220       # cost
 DIM = 244        # separators, labels
 PURPLE = 141     # worktree
+CYAN = 80        # hydration
 RULE = 242       # topic divider — visible as structure, dimmer than any data
 
 # ── Segment priority: dropped first when the window is narrow ──────────────
@@ -60,6 +61,7 @@ PRIO_PR = 3.5        # open PR for this branch: keep it near git, drop before wo
 PRIO_REST_QUIET = 6.5
 PRIO_REST_NUDGE = 3.2
 PRIO_REST_HARD = 1.2
+PRIO_WATER = 5.5     # gentler than the break nudge, drops before it
 
 # ── Topic groups: related segments sit together, divided by a faint rule ───────
 # Reading order is "who am I → where am I → what changed → what's it costing →
@@ -542,6 +544,28 @@ REST_SHOW = 30.0     # start showing the clock, quietly
 REST_NUDGE = 50.0    # you've earned a break
 REST_HARD = 90.0     # one ultradian cycle — actually get up
 REST_GAP = 10.0      # no render for this long means you were away: clock resets
+WATER_EVERY = 45.0   # a glass roughly every 45 min spreads ~2L over a working day
+
+
+BRANCH_MAX = 28      # cells a branch name may occupy before it gets elided
+
+
+def shorten_branch(name: str, limit: int | None = None) -> str:
+    """Elide the middle of a long branch name, keeping both ends.
+
+    A ticket-prefixed branch carries its meaning at the front (`dubo-175`) and
+    its subject at the back (`kill-gic`); it's the words in between you can
+    afford to lose. Printing it whole pushed the dirty count and ahead/behind
+    markers off the line, which is the part you actually watch while working.
+    """
+    limit = int(env_minutes("BRANCH_MAX", BRANCH_MAX)) if limit is None else limit
+    limit = max(limit, 8)                    # below this there is nothing left to read
+    if len(name) <= limit:
+        return name
+    keep = limit - 1                         # the ellipsis costs one cell
+    head = (keep + 1) // 2                   # odd budgets favour the ticket prefix
+    tail = keep - head
+    return name[:head] + "…" + (name[len(name) - tail:] if tail else "")
 
 
 def env_minutes(name: str, default: float) -> float:
@@ -562,6 +586,39 @@ def _rest_state_path() -> str:
     )
 
 
+def clocks(now: float | None = None, path: str | None = None, write: bool = True):
+    """Both body clocks: minutes worked, and minutes since a drink.
+
+    One function because they share one state file; two writers would race each
+    other. Returns `{"work": mins, "water": mins}`, or None if the file can't be
+    used. A break (or `--rested`) resets both, on the assumption that getting up
+    is when you refill the glass; `--drank` resets water alone.
+    """
+    now = time.time() if now is None else now
+    path = path or _rest_state_path()
+    gap = env_minutes("REST_GAP", REST_GAP) * 60
+
+    start = water = now
+    try:
+        prev = _load_own_json(path)
+        last, prev_start = float(prev["last"]), float(prev["start"])
+        # Clock skew or a stale file from a past boot: treat as a fresh start.
+        if 0 <= now - last < gap and prev_start <= now:
+            start = prev_start
+            prev_water = float(prev.get("water", prev_start))
+            water = prev_water if 0 <= now - prev_water else now
+    except Exception:
+        pass
+
+    if write:
+        try:
+            _write_private(path, {"start": start, "last": now, "water": water})
+        except Exception:
+            return None
+
+    return {"work": (now - start) / 60, "water": (now - water) / 60}
+
+
 def rest_minutes(now: float | None = None, path: str | None = None, write: bool = True):
     """Minutes worked without a break, tracking state across renders.
 
@@ -576,28 +633,8 @@ def rest_minutes(now: float | None = None, path: str | None = None, write: bool 
     clock and then stepping away for nine minutes would lose the break the
     previous render would otherwise have detected.
     """
-    now = time.time() if now is None else now
-    path = path or _rest_state_path()
-    gap = env_minutes("REST_GAP", REST_GAP) * 60
-
-    start = now
-    try:
-        prev = _load_own_json(path)
-        last, prev_start = float(prev["last"]), float(prev["start"])
-        # Clock skew or a stale file from a past boot: treat as a fresh start.
-        if 0 <= now - last < gap and prev_start <= now:
-            start = prev_start
-    except Exception:
-        pass
-
-    if not write:
-        return (now - start) / 60
-    try:
-        _write_private(path, {"start": start, "last": now})
-    except Exception:
-        return None
-
-    return (now - start) / 60
+    both = clocks(now=now, path=path, write=write)
+    return None if both is None else both["work"]
 
 
 def rest_segment(mins: float) -> str:
@@ -633,10 +670,37 @@ def rest_reset(path: str | None = None) -> bool:
     now = time.time()
     path = path or _rest_state_path()
     try:
-        _write_private(path, {"start": now, "last": now})
+        _write_private(path, {"start": now, "last": now, "water": now})
         return True
     except Exception:
         return False
+
+
+def water_reset(path: str | None = None) -> bool:
+    """Refill the glass without claiming you took a break. True if it stuck."""
+    now = time.time()
+    path = path or _rest_state_path()
+    try:
+        prev = _load_own_json(path)
+        start, last = float(prev["start"]), float(prev["last"])
+    except Exception:
+        start = last = now
+    try:
+        _write_private(path, {"start": start, "last": last, "water": now})
+        return True
+    except Exception:
+        return False
+
+
+def water_segment(mins: float) -> str:
+    """The hydration nudge, or "" while the glass is recent enough."""
+    every = env_minutes("WATER_EVERY", WATER_EVERY)
+    if mins < every:
+        return ""
+    clock = f"{int(mins)}m" if mins < 60 else f"{int(mins // 60)}h{int(mins % 60):02d}m"
+    if mins >= every * 2:
+        return "💧 " + c(clock, CYAN, bold=True) + c(" drink", CYAN)
+    return c(f"💧 {clock}", CYAN)
 
 
 def rest_priority(mins: float) -> float:
@@ -668,26 +732,33 @@ def main() -> None:
     # flags are free for humans. `--rested` is how you tell it the break happened.
     if len(sys.argv) == 2 and sys.argv[1] in ("--rested", "--rest-reset"):
         ok = rest_reset()
-        print("☕ break logged: work clock back to zero" if ok
+        print("☕ break logged: work clock and water back to zero" if ok
               else "couldn't write the rest clock; nothing changed")
+        sys.exit(0 if ok else 1)
+    if len(sys.argv) == 2 and sys.argv[1] in ("--drank", "--hydrated", "--water"):
+        ok = water_reset()
+        print("💧 noted: water clock back to zero" if ok
+              else "couldn't write the water clock; nothing changed")
         sys.exit(0 if ok else 1)
     if len(sys.argv) == 2 and sys.argv[1] in ("--version", "-V"):
         print(f"glint {__version__}")
         return
     if len(sys.argv) == 2 and sys.argv[1] == "--rest-status":
-        mins = rest_minutes(write=False)      # reading the clock is not activity
-        if mins is None:
+        both = clocks(write=False)            # reading the clocks is not activity
+        if both is None:
             print("rest clock unavailable")
             sys.exit(1)
-        print(f"{int(mins)} min since your last break "
+        print(f"{int(both['work'])} min since your last break "
               f"(nudge at {int(env_minutes('REST_NUDGE', REST_NUDGE))})")
+        print(f"{int(both['water'])} min since your last drink "
+              f"(nudge at {int(env_minutes('WATER_EVERY', WATER_EVERY))})")
         return
 
     # Anything else flag-shaped is a typo. Without this it falls through to
     # reading stdin and hangs with no output until Ctrl-D.
     if len(sys.argv) > 1 and sys.argv[1].startswith("-"):
         print(f"glint: unknown option {sys.argv[1]!r}\n"
-              "usage: glint.py [--rested | --rest-status | --version]\n"
+              "usage: glint.py [--rested | --drank | --rest-status | --version]\n"
               "       (no arguments: reads Claude Code status JSON on stdin)",
               file=sys.stderr)
         sys.exit(2)
@@ -736,7 +807,7 @@ def main() -> None:
         porcelain = git(cwd, "status", "--porcelain")
         dirty = len([ln for ln in porcelain.splitlines() if ln.strip()])
         color = YELLOW if dirty else GREEN
-        g = "🌿 " + c(branch, color)
+        g = "🌿 " + c(shorten_branch(branch), color)
         if dirty:
             g += c(f" ●{dirty}", YELLOW)
         # ahead / behind upstream
@@ -838,13 +909,16 @@ def main() -> None:
     if rl_bits:
         segments.append((PRIO_RATELIMIT, GRP_BUDGET, " ".join(rl_bits)))
 
-    # ── Rest reminder (hidden until you've been at it a while) ──
-    if enabled("REST"):
-        worked = rest_minutes()
-        if worked is not None:
-            seg = rest_segment(worked)
+    # ── Body clocks: break nudge, then hydration (both hidden until due) ──
+    if enabled("REST") or enabled("WATER"):
+        both = clocks()
+        if both is not None:
+            seg = rest_segment(both["work"]) if enabled("REST") else ""
             if seg:
-                segments.append((rest_priority(worked), GRP_REST, seg))
+                segments.append((rest_priority(both["work"]), GRP_REST, seg))
+            wseg = water_segment(both["water"]) if enabled("WATER") else ""
+            if wseg:
+                segments.append((PRIO_WATER, GRP_REST, wseg))
 
     sys.stdout.write(fit(segments, term_width() - 2))
 

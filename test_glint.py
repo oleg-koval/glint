@@ -305,6 +305,124 @@ def test_rate_limits_hidden_when_absent():
     assert "5h" not in out and "7d" not in out
 
 
+# ── long branch names ─────────────────────────────────────────────────────────
+
+def test_short_branches_are_untouched():
+    for name in ("main", "staging", "feat/small-thing"):
+        assert glint.shorten_branch(name) == name
+
+
+def test_long_branch_keeps_both_ends():
+    real = "dubo-175-retire-k8s-lease-leader-election-from-the-sync-path-kill-gic"
+    out = glint.shorten_branch(real)
+    assert len(out) == 28                      # the default budget
+    assert out.startswith("dubo-175")          # ticket prefix survives
+    assert out.endswith("kill-gic")            # so does the subject
+    assert "…" in out
+
+
+def test_branch_budget_is_configurable_and_has_a_floor():
+    real = "dubo-175-retire-k8s-lease-leader-election"
+    assert len(glint.shorten_branch(real, 16)) == 16
+    assert len(glint.shorten_branch(real, 2)) == 8      # floor, still readable
+
+
+def test_dirty_and_tracking_markers_survive_a_long_branch():
+    # The bug: a 69-char branch pushed ●11 ↓34 off the line entirely.
+    repo = tempfile.mkdtemp()
+    branch = "dubo-175-retire-k8s-lease-leader-election-from-the-sync-path-kill-gic"
+    Path(repo, "seed.txt").write_text("seed")
+    # An unborn branch makes `rev-parse --abbrev-ref HEAD` answer "HEAD", so the
+    # git segment never renders: the fixture needs a commit to be a real repo.
+    for cmd in (["init", "-q", "-b", branch], ["config", "user.email", "t@t"],
+                ["config", "user.name", "t"], ["add", "."],
+                ["commit", "-qm", "seed", "--no-gpg-sign"]):
+        subprocess.run(["git", "-C", repo, *cmd], capture_output=True)
+    Path(repo, "dirty.txt").write_text("x")
+    out = render({"model": {"display_name": "Sonnet 5"}, "cwd": repo}, COLUMNS="100")
+    assert "…" in out and "dubo-175" in out
+    assert "●1" in out                         # the count made it onto the line
+    assert branch not in out                   # not printed in full
+
+
+# ── hydration ─────────────────────────────────────────────────────────────────
+
+def test_water_clock_accumulates_and_survives_short_gaps():
+    with tempfile.TemporaryDirectory() as d:
+        state = str(Path(d) / "rest.json")
+        now = time.time()
+        _rest_state_full(state, start=now - 3600, last=now - 60, water=now - 2700)
+        both = glint.clocks(now=now, path=state)
+        assert round(both["work"]) == 60
+        assert round(both["water"]) == 45
+
+
+def test_a_break_refills_the_glass():
+    with tempfile.TemporaryDirectory() as d:
+        state = str(Path(d) / "rest.json")
+        now = time.time()
+        # away for 11 minutes: both clocks restart
+        _rest_state_full(state, start=now - 7200, last=now - 660, water=now - 7200)
+        both = glint.clocks(now=now, path=state)
+        assert both["work"] == 0.0 and both["water"] == 0.0
+
+
+def test_water_segment_thresholds():
+    assert glint.water_segment(44) == ""
+    assert "💧" in glint.water_segment(47)
+    assert "drink" not in glint.water_segment(47)       # gentle at one interval
+    assert "drink" in glint.water_segment(95)           # firmer at two
+    assert "1h40m" in glint.water_segment(100)
+
+
+def test_water_interval_follows_the_env():
+    os.environ["GLINT_WATER_EVERY"] = "20"
+    try:
+        assert "💧" in glint.water_segment(21)
+        assert glint.water_segment(19) == ""
+    finally:
+        os.environ.pop("GLINT_WATER_EVERY", None)
+
+
+def test_drank_resets_water_but_not_the_work_clock():
+    with tempfile.TemporaryDirectory() as d:
+        state = str(Path(d) / "rest.json")
+        now = time.time()
+        _rest_state_full(state, start=now - 3600, last=now, water=now - 3600)
+        env = {k: v for k, v in os.environ.items() if not k.startswith("GLINT_")}
+        env["GLINT_REST_STATE"] = state
+        p = subprocess.run([sys.executable, str(HERE / "glint.py"), "--drank"],
+                           capture_output=True, text=True, env=env)
+        assert p.returncode == 0, p.stderr
+        assert "water clock back to zero" in p.stdout
+        both = glint.clocks(path=state, write=False)
+        assert round(both["work"]) == 60                # still working
+        assert round(both["water"]) == 0                # glass refilled
+
+
+def test_rested_resets_both_clocks():
+    with tempfile.TemporaryDirectory() as d:
+        state = str(Path(d) / "rest.json")
+        now = time.time()
+        _rest_state_full(state, start=now - 3600, last=now, water=now - 3600)
+        assert glint.rest_reset(path=state) is True
+        both = glint.clocks(path=state, write=False)
+        assert round(both["work"]) == 0 and round(both["water"]) == 0
+
+
+def test_water_hidden_when_switched_off():
+    with tempfile.TemporaryDirectory() as d:
+        state = str(Path(d) / "rest.json")
+        now = time.time()
+        _rest_state_full(state, start=now - 3600, last=now, water=now - 3600)
+        on = render({"model": {"display_name": "Sonnet 5"}, "cwd": "/tmp"},
+                    GLINT_REST_STATE=state, GLINT_REST="1")
+        assert "💧" in on
+        off = render({"model": {"display_name": "Sonnet 5"}, "cwd": "/tmp"},
+                     GLINT_REST_STATE=state, GLINT_REST="1", GLINT_WATER="0")
+        assert "💧" not in off
+
+
 # ── opt-in gauges ─────────────────────────────────────────────────────────────
 
 BARS_PAYLOAD = {
@@ -387,6 +505,11 @@ def test_dropping_a_whole_group_drops_its_rule():
 def _rest_state(tmp: str, start: float, last: float) -> None:
     with open(tmp, "w") as f:
         json.dump({"start": start, "last": last}, f)
+
+
+def _rest_state_full(tmp: str, start: float, last: float, water: float) -> None:
+    with open(tmp, "w") as f:
+        json.dump({"start": start, "last": last, "water": water}, f)
 
 
 def test_rest_clock_starts_at_zero():

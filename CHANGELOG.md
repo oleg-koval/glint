@@ -12,6 +12,29 @@ preferences you already chose and every unrelated setting untouched:
 curl -fsSL https://raw.githubusercontent.com/oleg-koval/glint/main/install.sh | bash
 ```
 
+## [1.3.0] - 2026-08-05
+
+### Added
+
+- **Hydration reminder**: `💧 47m` joins the rest group once it has been 45
+  minutes since your last drink, turning into `💧 1h40m drink` at twice that.
+  Same rules as the break nudge: invisible until due, and it shares the same
+  idle-gap clock. A break resets it too, on the assumption that getting up is
+  when you refill the glass, so `glint.py --drank` is only for the times you
+  drink at your desk. Interval is `GLINT_WATER_EVERY`, off with `GLINT_WATER=0`.
+- `--rest-status` now reports both clocks, and `--rested` resets both.
+
+### Changed
+
+- **Long branch names are elided in the middle** instead of running off the
+  line: `dubo-175-retire-k8s-lease-leader-election-from-the-sync-path-kill-gic`
+  renders as `dubo-175-retir…path-kill-gic`. A ticket-prefixed branch carries
+  its meaning at both ends and the words in between are the ones you can lose,
+  so both ends are kept. This is a fix for a real loss of information: a 69
+  character branch pushed the dirty count and ahead/behind markers, the part you
+  actually watch while working, off the end of the line. Budget is 28 cells,
+  configurable with `GLINT_BRANCH_MAX`.
+
 ## [1.2.0] - 2026-08-05
 
 ### Added
@@ -122,6 +145,7 @@ ahead/behind, session cost and duration, lines changed, and the live
 context-window gauge. One file, zero dependencies, graceful degradation, and a
 bare `✻ Claude` fallback so the prompt never breaks.
 
+[1.3.0]: https://github.com/oleg-koval/glint/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/oleg-koval/glint/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/oleg-koval/glint/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/oleg-koval/glint/releases/tag/v1.0.0
