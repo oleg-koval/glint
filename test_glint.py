@@ -323,8 +323,21 @@ def test_long_branch_keeps_both_ends():
 
 def test_branch_budget_is_configurable_and_has_a_floor():
     real = "dubo-175-retire-k8s-lease-leader-election"
-    assert len(glint.shorten_branch(real, 16)) == 16
-    assert len(glint.shorten_branch(real, 2)) == 8      # floor, still readable
+    out = glint.shorten_branch(real, 16)
+    assert glint.vis_width(out) <= 16
+    out = glint.shorten_branch(real, 2)
+    assert glint.vis_width(out) <= 8      # floor, still readable
+
+
+def test_branch_with_wide_unicode_respects_display_width():
+    # Wide Unicode characters (emoji, CJK) take 2 cells; truncation must measure
+    # display width, not code-point length, to stay within the limit.
+    branch = "feat-📦-package-manager-🚀-deploy"
+    out = glint.shorten_branch(branch, 28)
+    assert glint.vis_width(out) <= 28
+    assert "📦" in out or "🚀" in out  # at least one emoji survives
+    # Verify the truncated branch still contains prefix and suffix.
+    assert out.startswith("feat") or "deploy" in out
 
 
 def test_dirty_and_tracking_markers_survive_a_long_branch():

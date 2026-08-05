@@ -32,6 +32,10 @@ import sys
 import tempfile
 import time
 import unicodedata
+try:
+    import fcntl
+except ImportError:
+    fcntl = None  # Windows doesn't have fcntl; locking is best-effort
 
 # ── 256-color palette ─────────────────────────────────────────────────────────
 CORAL = 209      # model badge (Anthropic-ish)
@@ -560,12 +564,26 @@ def shorten_branch(name: str, limit: int | None = None) -> str:
     """
     limit = int(env_minutes("BRANCH_MAX", BRANCH_MAX)) if limit is None else limit
     limit = max(limit, 8)                    # below this there is nothing left to read
-    if len(name) <= limit:
+    if vis_width(name) <= limit:
         return name
+    # Measure by display-cell width and select head/tail portions that fit.
     keep = limit - 1                         # the ellipsis costs one cell
-    head = (keep + 1) // 2                   # odd budgets favour the ticket prefix
-    tail = keep - head
-    return name[:head] + "…" + (name[len(name) - tail:] if tail else "")
+    head_budget = (keep + 1) // 2            # odd budgets favour the ticket prefix
+    tail_budget = keep - head_budget
+    # Find the longest prefix that fits head_budget cells.
+    head_chars = 0
+    for i, ch in enumerate(name):
+        if vis_width(name[:i+1]) > head_budget:
+            break
+        head_chars = i + 1
+    # Find the longest suffix that fits tail_budget cells.
+    tail_chars = 0
+    if tail_budget > 0:
+        for i in range(len(name) - 1, -1, -1):
+            if vis_width(name[i:]) > tail_budget:
+                break
+            tail_chars = len(name) - i
+    return name[:head_chars] + "…" + (name[len(name) - tail_chars:] if tail_chars else "")
 
 
 def env_minutes(name: str, default: float) -> float:
@@ -586,6 +604,32 @@ def _rest_state_path() -> str:
     )
 
 
+class _FileLock:
+    """Context manager for advisory file locking. Best-effort on Windows."""
+    def __init__(self, path: str):
+        self.path = path
+        self.lock_path = path + ".lock"
+        self.fd = None
+
+    def __enter__(self):
+        try:
+            self.fd = os.open(self.lock_path, os.O_WRONLY | os.O_CREAT, 0o600)
+            if fcntl is not None:
+                fcntl.flock(self.fd, fcntl.LOCK_EX)
+        except Exception:
+            pass  # best-effort locking
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self.fd is not None:
+            try:
+                if fcntl is not None:
+                    fcntl.flock(self.fd, fcntl.LOCK_UN)
+                os.close(self.fd)
+            except Exception:
+                pass
+
+
 def clocks(now: float | None = None, path: str | None = None, write: bool = True):
     """Both body clocks: minutes worked, and minutes since a drink.
 
@@ -598,23 +642,24 @@ def clocks(now: float | None = None, path: str | None = None, write: bool = True
     path = path or _rest_state_path()
     gap = env_minutes("REST_GAP", REST_GAP) * 60
 
-    start = water = now
-    try:
-        prev = _load_own_json(path)
-        last, prev_start = float(prev["last"]), float(prev["start"])
-        # Clock skew or a stale file from a past boot: treat as a fresh start.
-        if 0 <= now - last < gap and prev_start <= now:
-            start = prev_start
-            prev_water = float(prev.get("water", prev_start))
-            water = prev_water if 0 <= now - prev_water else now
-    except Exception:
-        pass
-
-    if write:
+    with _FileLock(path):
+        start = water = now
         try:
-            _write_private(path, {"start": start, "last": now, "water": water})
+            prev = _load_own_json(path)
+            last, prev_start = float(prev["last"]), float(prev["start"])
+            # Clock skew or a stale file from a past boot: treat as a fresh start.
+            if 0 <= now - last < gap and prev_start <= now:
+                start = prev_start
+                prev_water = float(prev.get("water", now))
+                water = prev_water if 0 <= now - prev_water else now
         except Exception:
-            return None
+            pass
+
+        if write:
+            try:
+                _write_private(path, {"start": start, "last": now, "water": water})
+            except Exception:
+                return None
 
     return {"work": (now - start) / 60, "water": (now - water) / 60}
 
@@ -680,16 +725,17 @@ def water_reset(path: str | None = None) -> bool:
     """Refill the glass without claiming you took a break. True if it stuck."""
     now = time.time()
     path = path or _rest_state_path()
-    try:
-        prev = _load_own_json(path)
-        start, last = float(prev["start"]), float(prev["last"])
-    except Exception:
-        start = last = now
-    try:
-        _write_private(path, {"start": start, "last": last, "water": now})
-        return True
-    except Exception:
-        return False
+    with _FileLock(path):
+        try:
+            prev = _load_own_json(path)
+            start = float(prev["start"])
+        except Exception:
+            start = now
+        try:
+            _write_private(path, {"start": start, "last": now, "water": now})
+            return True
+        except Exception:
+            return False
 
 
 def water_segment(mins: float) -> str:
