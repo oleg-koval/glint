@@ -3,6 +3,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/python-3.8%2B-3776AB.svg" alt="Python 3.8+">
   <img src="https://img.shields.io/badge/deps-zero-2ea44f.svg" alt="Zero dependencies">
+  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/changelog-v1.1.0-blue.svg" alt="Changelog"></a>
 </p>
 
 <p align="center">
@@ -27,6 +28,8 @@ Every Claude Code render, `glint` reads the session JSON and paints one tidy, co
 Segments are **grouped by topic** — `session ┃ place ┃ change ┃ budget ┃ rest` — separated by a dim bar, so your eye lands on the group it wants instead of scanning one long row. The last group is the part that isn't about the machine: **a break reminder that appears once you've been working too long without stopping.**
 
 One Python file. Zero dependencies. ~75 ms per render. Never crashes your status bar.
+
+> **New in v1.1.0** — topic groups, a break reminder, the open-PR segment, cache-hit ratio, quota pace, and gauges that are now opt-in. See the [changelog](CHANGELOG.md).
 
 ## Features
 
@@ -151,6 +154,16 @@ Treat them as defaults, not doctrine — `GLINT_REST_NUDGE=40` moves the whole l
 - **Claude Code** with status-line support
 - **Python 3.8+** (standard library only — no `pip install`)
 - **git** (optional; the branch segment simply hides without it)
+
+## Upgrading
+
+Re-run the installer — it overwrites `~/.claude/glint.py` and leaves your settings alone:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/oleg-koval/glint/main/install.sh | bash
+```
+
+What changed between versions is in [CHANGELOG.md](CHANGELOG.md).
 
 ## Uninstall
 

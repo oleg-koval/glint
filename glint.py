@@ -20,6 +20,8 @@ Repo: https://github.com/oleg-koval/glint
 
 from __future__ import annotations
 
+__version__ = "1.1.0"   # keep in step with CHANGELOG.md and the git tag
+
 import hashlib
 import json
 import os
@@ -584,6 +586,9 @@ def main() -> None:
         print("☕ break logged — work clock back to zero" if ok
               else "couldn't write the rest clock; nothing changed")
         sys.exit(0 if ok else 1)
+    if len(sys.argv) == 2 and sys.argv[1] in ("--version", "-V"):
+        print(f"glint {__version__}")
+        return
     if len(sys.argv) == 2 and sys.argv[1] == "--rest-status":
         mins = rest_minutes()
         if mins is None:

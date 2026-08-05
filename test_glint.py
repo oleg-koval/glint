@@ -474,6 +474,16 @@ def test_rest_env_minutes_rejects_junk():
     del os.environ["GLINT_REST_NUDGE"]
 
 
+def test_version_flag_matches_the_changelog():
+    p = subprocess.run([sys.executable, str(HERE / "glint.py"), "--version"],
+                       capture_output=True, text=True)
+    assert p.returncode == 0, p.stderr
+    assert p.stdout.strip() == f"glint {glint.__version__}"
+    # the changelog's newest entry is the release this file claims to be
+    changelog = (HERE / "CHANGELOG.md").read_text()
+    assert f"## [{glint.__version__}]" in changelog
+
+
 def test_rested_flag_zeroes_the_clock():
     with tempfile.TemporaryDirectory() as d:
         state = str(Path(d) / "rest.json")
