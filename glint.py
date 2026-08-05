@@ -668,7 +668,7 @@ def main() -> None:
     # flags are free for humans. `--rested` is how you tell it the break happened.
     if len(sys.argv) == 2 and sys.argv[1] in ("--rested", "--rest-reset"):
         ok = rest_reset()
-        print("☕ break logged — work clock back to zero" if ok
+        print("☕ break logged: work clock back to zero" if ok
               else "couldn't write the rest clock; nothing changed")
         sys.exit(0 if ok else 1)
     if len(sys.argv) == 2 and sys.argv[1] in ("--version", "-V"):

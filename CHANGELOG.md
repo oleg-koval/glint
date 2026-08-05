@@ -12,11 +12,11 @@ preferences you already chose and every unrelated setting untouched:
 curl -fsSL https://raw.githubusercontent.com/oleg-koval/glint/main/install.sh | bash
 ```
 
-## [1.2.0] — 2026-08-05
+## [1.2.0] - 2026-08-05
 
 ### Added
 
-- **Compaction alert** (`glint_alert.py`) — an optional companion [Stop
+- **Compaction alert** (`glint_alert.py`): an optional companion [Stop
   hook](https://docs.claude.com/en/docs/claude-code/hooks). The status line
   *shows* context filling up; this *tells* you, with a notification and sound at
   75% and again at 90%, plus an inline reminder of exactly what to run and where
@@ -29,11 +29,11 @@ curl -fsSL https://raw.githubusercontent.com/oleg-koval/glint/main/install.sh | 
 
 - **glint now works on Windows.** `os.getuid` is Unix-only, so every temp-cache
   path raised there and the whole line collapsed to the bare `✻ Claude`
-  fallback — it worked everywhere except the platform nobody had tested. Paths
+  fallback: it worked everywhere except the platform nobody had tested. Paths
   now fall back to the username, and the cache ownership check is skipped where
   the OS reports no meaningful owner.
 
-## [1.1.0] — 2026-08-05
+## [1.1.0] - 2026-08-05
 
 Everything since the first release: seven new segments, a layout that groups
 them, and the first thing on the line that isn't about the machine.
@@ -43,7 +43,7 @@ them, and the first thing on the line that isn't about the machine.
 - **Break reminder.** A new group tracks how long you've worked without
   stopping, and stays invisible until 30 minutes have passed: dim `🪑 34m`,
   then `☕ 52m break` at 50 minutes, then a bold red `🛑 1h35m stand up` at 90.
-  Claude Code renders on activity, so the gap between renders is idle time —
+  Claude Code renders on activity, so the gap between renders is idle time, so
   ten quiet minutes counts as a break and restarts the clock. Took a shorter
   break? `glint.py --rested` logs it; `glint.py --rest-status` prints the clock.
   Tune with `GLINT_REST_NUDGE` (moves the whole ladder) or switch it off with
@@ -51,12 +51,12 @@ them, and the first thing on the line that isn't about the machine.
 - **Topic groups.** Segments are grouped `session ┃ place ┃ change ┃ budget ┃
   rest` and divided by a dim bar, so your eye lands on the group it wants
   instead of scanning ten segments in one uniform row.
-- **Open pull request** for the current branch — number, draft state and CI
+- **Open pull request** for the current branch: number, draft state and CI
   rollup, as an OSC 8 hyperlink you can click. Looked up in a detached
   background `gh` call and cached, so it never delays a render.
-- **Prompt-cache hit ratio** (`♻️ 94%`) — the share of your context served from
+- **Prompt-cache hit ratio** (`♻️ 94%`): the share of your context served from
   cache, where reads are ~10× cheaper than fresh input.
-- **Quota pace marker** (`⚡110%`) — appears only when you're burning quota
+- **Quota pace marker** (`⚡110%`): appears only when you're burning quota
   faster than the window elapses; the share you'd need by reset at this rate.
 - **Rate-limit windows** (`⏱5h 63% ↻1h07m`, `📅7d 10%`) with reset ETAs, read
   from the payload when your plan reports them.
@@ -75,7 +75,7 @@ them, and the first thing on the line that isn't about the machine.
 
 ### Changed
 
-- **The `▕███░░▏` gauges are now opt-in** — set `GLINT_BARS=1`, or answer the
+- **The `▕███░░▏` gauges are now opt-in**: set `GLINT_BARS=1`, or answer the
   question the installer asks. It's the only thing this release *removes* from
   the default line: the coloured percentage already carried the signal, and the
   blocks cost ~10 columns that a narrow terminal would rather spend on a
@@ -92,7 +92,7 @@ them, and the first thing on the line that isn't about the machine.
 
 - Every line was measured too wide: `✻` in the model badge and `⚠` in the
   context warning were counted as two cells each, so segments were dropped on
-  terminals that had room for them. Width now follows emoji presentation — a
+  terminals that had room for them. Width now follows emoji presentation: a
   glyph is wide if it's emoji-by-default or carries a `U+FE0F` selector.
 - `--rest-status` used to stamp the clock while reading it, which restarted
   idle-gap detection: checking the status and then stepping away for nine
@@ -101,7 +101,7 @@ them, and the first thing on the line that isn't about the machine.
   until `Ctrl-D`. It now prints usage and exits 2.
 - The PR cache and rest clock are written `0600` with `O_EXCL`, read back only
   if we own them and they're plain files, and an open-PR URL is only turned into
-  a hyperlink when it's `https://` — a predictable name in a shared temp dir
+  a hyperlink when it's `https://`: a predictable name in a shared temp dir
   shouldn't let another local user choose where an invisible link points.
 - Re-running the installer (i.e. upgrading) reset your stored preferences: a
   recorded `GLINT_BARS=1` or `GLINT_REST=0` was dropped when the new run didn't
@@ -115,7 +115,7 @@ them, and the first thing on the line that isn't about the machine.
   `GLINT_COST=0` failed an unrelated test. Tests now scrub those variables and
   keep the rest clock in a throwaway file, never your real one.
 
-## [1.0.0] — 2026-06-20
+## [1.0.0] - 2026-06-20
 
 First public release: model, directory, git branch with dirty count and
 ahead/behind, session cost and duration, lines changed, and the live
