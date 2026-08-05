@@ -2,9 +2,11 @@
 """Smoke + unit tests for glint. Stdlib only: `python3 test_glint.py`."""
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 import glint
@@ -12,11 +14,21 @@ import glint
 HERE = Path(__file__).parent
 
 
-def render(payload: dict) -> str:
-    """Run glint.py as Claude Code would and return its stdout."""
+def render(payload: dict, **env_overrides: str) -> str:
+    """Run glint.py as Claude Code would and return its stdout.
+
+    GLINT_* is scrubbed from the environment first: a developer with, say,
+    `GLINT_COST=0` in their shell would otherwise fail tests that assert on the
+    default line. Pass `GLINT_BARS="1"` explicitly to test a switched-on feature.
+    """
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GLINT_")}
+    # The rest clock is shared state in the temp dir; leave the developer's real
+    # one alone unless a test opts in with its own GLINT_REST_STATE.
+    env["GLINT_REST"] = "0"
+    env.update(env_overrides)
     p = subprocess.run(
         [sys.executable, str(HERE / "glint.py")],
-        input=json.dumps(payload), capture_output=True, text=True,
+        input=json.dumps(payload), capture_output=True, text=True, env=env,
     )
     assert p.returncode == 0, p.stderr
     return p.stdout
@@ -286,6 +298,229 @@ def test_rate_limits_render_when_present():
 def test_rate_limits_hidden_when_absent():
     out = render({"model": {"display_name": "Sonnet 5"}, "cwd": "/tmp"})
     assert "5h" not in out and "7d" not in out
+
+
+# ── opt-in gauges ─────────────────────────────────────────────────────────────
+
+BARS_PAYLOAD = {
+    "model": {"display_name": "Sonnet 5"}, "cwd": "/tmp",
+    "context_window": {"used_percentage": 36, "context_window_size": 1_000_000,
+                       "total_input_tokens": 357_000},
+    "rate_limits": {"five_hour": {"used_percentage": 63}, "seven_day": {"used_percentage": 10}},
+}
+
+
+def test_opt_in_defaults_to_off():
+    os.environ.pop("GLINT_NEWTHING", None)
+    assert glint.opt_in("NEWTHING") is False
+    for on in ("1", "true", "yes", "on", "ON"):
+        os.environ["GLINT_NEWTHING"] = on
+        assert glint.opt_in("NEWTHING") is True, on
+    for off in ("0", "false", "no", "off", "", "maybe"):
+        os.environ["GLINT_NEWTHING"] = off
+        assert glint.opt_in("NEWTHING") is False, off
+    os.environ.pop("GLINT_NEWTHING", None)
+
+
+def test_gauges_hidden_by_default_but_percentages_stay():
+    out = render(BARS_PAYLOAD)
+    assert "█" not in out and "░" not in out
+    assert "36%" in out and "63%" in out and "10%" in out
+
+
+def test_gauges_shown_when_bars_opted_in():
+    out = render(BARS_PAYLOAD, GLINT_BARS="1")
+    assert out.count("▕") == 3          # context + 5h + 7d
+    assert "█" in out and "░" in out
+
+
+# ── topic grouping ────────────────────────────────────────────────────────────
+
+def test_groups_divided_by_rule():
+    out = render({
+        "model": {"display_name": "Sonnet 5"}, "cwd": "/tmp",
+        "cost": {"total_cost_usd": 0.42, "total_lines_added": 10, "total_lines_removed": 2},
+        "rate_limits": {"five_hour": {"used_percentage": 63}},
+    })
+    # session ┃ place ┃ change ┃ budget — three dividers, and none trailing.
+    assert out.count("┃") == 3
+    assert not glint._ANSI.sub("", out).rstrip().endswith("┃")
+
+
+def test_same_group_segments_share_a_gap_not_a_rule():
+    line = glint._ANSI.sub("", glint.fit([
+        (glint.PRIO_DIR, glint.GRP_PLACE, "dir"),
+        (glint.PRIO_GIT, glint.GRP_PLACE, "branch"),
+    ], 80))
+    assert line == "dir  branch"
+
+
+def test_rule_sits_between_groups_only():
+    line = glint._ANSI.sub("", glint.fit([
+        (glint.PRIO_MODEL, glint.GRP_SESSION, "model"),
+        (glint.PRIO_DIR, glint.GRP_PLACE, "dir"),
+        (glint.PRIO_GIT, glint.GRP_PLACE, "branch"),
+        (glint.PRIO_COST, glint.GRP_CHANGE, "cost"),
+    ], 80))
+    assert line == "model  ┃  dir  branch  ┃  cost"
+
+
+def test_dropping_a_whole_group_drops_its_rule():
+    # Only the model badge (priority 0) survives an 8-column window.
+    line = glint._ANSI.sub("", glint.fit([
+        (glint.PRIO_MODEL, glint.GRP_SESSION, "model"),
+        (glint.PRIO_COST, glint.GRP_CHANGE, "cost"),
+        (glint.PRIO_RATELIMIT, glint.GRP_BUDGET, "5h 63%"),
+    ], 8))
+    assert line == "model"
+
+
+# ── rest reminder ─────────────────────────────────────────────────────────────
+
+def _rest_state(tmp: str, start: float, last: float) -> None:
+    with open(tmp, "w") as f:
+        json.dump({"start": start, "last": last}, f)
+
+
+def test_rest_clock_starts_at_zero():
+    with tempfile.TemporaryDirectory() as d:
+        state = str(Path(d) / "rest.json")
+        assert glint.rest_minutes(now=1000.0, path=state) == 0.0
+
+
+def test_rest_clock_accumulates_across_renders():
+    with tempfile.TemporaryDirectory() as d:
+        state = str(Path(d) / "rest.json")
+        _rest_state(state, start=0.0, last=60.0)          # 1 min in, seen 1 min ago
+        assert glint.rest_minutes(now=120.0, path=state) == 2.0
+
+
+def test_rest_clock_resets_after_a_real_break():
+    with tempfile.TemporaryDirectory() as d:
+        state = str(Path(d) / "rest.json")
+        # Worked an hour, then no render for 11 minutes: that was a break.
+        _rest_state(state, start=0.0, last=3600.0)
+        assert glint.rest_minutes(now=3600.0 + 11 * 60, path=state) == 0.0
+
+
+def test_rest_clock_survives_a_gap_shorter_than_the_break():
+    with tempfile.TemporaryDirectory() as d:
+        state = str(Path(d) / "rest.json")
+        _rest_state(state, start=0.0, last=3600.0)
+        mins = glint.rest_minutes(now=3600.0 + 9 * 60, path=state)   # 9 min < 10
+        assert round(mins) == 69
+
+
+def test_rest_clock_ignores_a_corrupt_or_future_state_file():
+    with tempfile.TemporaryDirectory() as d:
+        state = str(Path(d) / "rest.json")
+        with open(state, "w") as f:
+            f.write("{not json")
+        assert glint.rest_minutes(now=500.0, path=state) == 0.0
+        _rest_state(state, start=9e9, last=500.0)          # start in the future
+        assert glint.rest_minutes(now=500.0, path=state) == 0.0
+
+
+def test_rest_segment_thresholds():
+    assert glint.rest_segment(0) == ""
+    assert glint.rest_segment(29) == ""                     # below REST_SHOW
+    assert "🪑" in glint.rest_segment(34)                   # quiet clock
+    assert "☕" in glint.rest_segment(52)                    # nudge
+    assert "🛑" in glint.rest_segment(95)                    # ultradian cycle
+    assert "34m" in glint.rest_segment(34)
+    assert "1h35m" in glint.rest_segment(95)
+
+
+def test_rest_segment_says_what_to_do():
+    # An emoji and a number alone don't tell you which clock this is.
+    assert "break" in glint.rest_segment(52)
+    assert "stand up" in glint.rest_segment(95)
+    assert "break" not in glint.rest_segment(34)            # nothing to do yet
+
+
+def test_rest_priority_escalates_with_fatigue():
+    assert glint.rest_priority(34) == glint.PRIO_REST_QUIET
+    assert glint.rest_priority(52) == glint.PRIO_REST_NUDGE
+    assert glint.rest_priority(95) == glint.PRIO_REST_HARD
+    # ordering is what matters: later nudges survive a narrower line
+    assert glint.PRIO_REST_HARD < glint.PRIO_REST_NUDGE < glint.PRIO_REST_QUIET
+    assert glint.PRIO_REST_HARD > glint.PRIO_MODEL          # never beats identity
+
+
+def test_stand_up_nudge_outlives_the_cost_segment():
+    line = glint._ANSI.sub("", glint.fit([
+        (glint.PRIO_MODEL, glint.GRP_SESSION, "model"),
+        (glint.PRIO_COST, glint.GRP_CHANGE, "$1.20"),
+        (glint.rest_priority(95), glint.GRP_REST, "stand up"),
+    ], 20))
+    assert "stand up" in line and "$1.20" not in line
+
+
+def test_rest_thresholds_follow_the_nudge_env():
+    os.environ["GLINT_REST_NUDGE"] = "25"
+    try:
+        assert "☕" in glint.rest_segment(26)                # nudge moved down
+        assert "🪑" in glint.rest_segment(16)                # show = 60% of nudge
+        assert glint.rest_segment(14) == ""
+        assert "🛑" in glint.rest_segment(46)                # hard = 1.8x nudge
+    finally:
+        del os.environ["GLINT_REST_NUDGE"]
+
+
+def test_rest_env_minutes_rejects_junk():
+    for bad in ("", "abc", "0", "-5"):
+        os.environ["GLINT_REST_NUDGE"] = bad
+        assert glint.env_minutes("REST_NUDGE", 50.0) == 50.0, bad
+    del os.environ["GLINT_REST_NUDGE"]
+
+
+def test_rested_flag_zeroes_the_clock():
+    with tempfile.TemporaryDirectory() as d:
+        state = str(Path(d) / "rest.json")
+        now = time.time()
+        _rest_state(state, start=now - 70 * 60, last=now)
+        env = {k: v for k, v in os.environ.items() if not k.startswith("GLINT_")}
+        env["GLINT_REST_STATE"] = state
+        p = subprocess.run([sys.executable, str(HERE / "glint.py"), "--rested"],
+                           capture_output=True, text=True, env=env)
+        assert p.returncode == 0, p.stderr
+        assert "break logged" in p.stdout
+        with open(state) as f:
+            after = json.load(f)
+        assert after["last"] - after["start"] < 1        # back to zero
+
+
+def test_rest_status_reports_without_resetting():
+    with tempfile.TemporaryDirectory() as d:
+        state = str(Path(d) / "rest.json")
+        now = time.time()
+        _rest_state(state, start=now - 42 * 60, last=now)
+        env = {k: v for k, v in os.environ.items() if not k.startswith("GLINT_")}
+        env["GLINT_REST_STATE"] = state
+        p = subprocess.run([sys.executable, str(HERE / "glint.py"), "--rest-status"],
+                           capture_output=True, text=True, env=env)
+        assert p.returncode == 0, p.stderr
+        assert "42 min" in p.stdout
+        with open(state) as f:
+            assert json.load(f)["last"] - json.load(open(state))["start"] > 40 * 60
+
+
+def test_rest_reset_reports_failure_instead_of_lying():
+    assert glint.rest_reset(path="/nope/does/not/exist/rest.json") is False
+
+
+def test_rest_segment_renders_and_can_be_switched_off():
+    payload = {"model": {"display_name": "Sonnet 5"}, "cwd": "/tmp"}
+    with tempfile.TemporaryDirectory() as d:
+        state = str(Path(d) / "rest.json")
+        now = time.time()
+        _rest_state(state, start=now - 3600, last=now)        # an hour of work
+
+        on = render(payload, GLINT_REST="1", GLINT_REST_STATE=state)
+        assert "☕" in on and "1h00m" in on and "break" in on
+
+        off = render(payload, GLINT_REST="0", GLINT_REST_STATE=state)
+        assert "☕" not in off
 
 
 if __name__ == "__main__":
