@@ -3,6 +3,7 @@
 
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -480,6 +481,35 @@ def test_rest_env_minutes_rejects_junk():
             assert glint.env_minutes("REST_NUDGE", 50.0) == 50.0, bad
     finally:
         os.environ.pop("GLINT_REST_NUDGE", None)
+
+
+def test_uid_tag_survives_a_platform_without_getuid():
+    # os.getuid is Unix-only. Windows used to raise inside every cache path and
+    # collapse the whole line to the bare fallback badge.
+    real = os.getuid
+    try:
+        del os.getuid
+        assert glint._uid()                       # non-empty, filename-safe
+        assert re.fullmatch(r"\w+", glint._uid())
+        assert "glint-rest-" in glint._rest_state_path()
+        assert "glint-pr-" in glint._pr_cache_path("/repo", "main")
+    finally:
+        os.getuid = real
+    assert glint._uid() == str(os.getuid())        # unchanged where it exists
+
+
+def test_status_line_still_renders_without_getuid():
+    shim = ("import os\n"
+            "del os.getuid\n"
+            "import runpy, sys\n"
+            "sys.argv = ['glint.py']\n"
+            f"runpy.run_path({str(HERE / 'glint.py')!r}, run_name='__main__')\n")
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GLINT_")}
+    p = subprocess.run([sys.executable, "-c", shim], env=env, capture_output=True, text=True,
+                       input=json.dumps({"model": {"display_name": "Sonnet 5"}, "cwd": "/tmp"}))
+    assert p.returncode == 0, p.stderr
+    assert "S5" in p.stdout
+    assert p.stdout.strip() != "\033[38;5;209m✻ Claude\033[0m"   # not the crash fallback
 
 
 def test_vis_width_counts_text_glyphs_as_one_cell():

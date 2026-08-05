@@ -20,7 +20,7 @@ Repo: https://github.com/oleg-koval/glint
 
 from __future__ import annotations
 
-__version__ = "1.1.0"   # keep in step with CHANGELOG.md and the git tag
+__version__ = "1.2.0"   # keep in step with CHANGELOG.md and the git tag
 
 import hashlib
 import json
@@ -240,6 +240,19 @@ _PR_TTL = 180.0        # seconds a cached lookup stays fresh
 _PR_NEGATIVE_TTL = 60.0  # shorter, so a PR opened moments ago shows up quickly
 
 
+def _uid() -> str:
+    """A stable per-user tag for temp file names.
+
+    `os.getuid` is Unix-only. Without this, every cache path raised on Windows
+    and the whole line collapsed to the bare `✻ Claude` fallback — the status
+    line worked everywhere except the platform that never got tested.
+    """
+    getuid = getattr(os, "getuid", None)
+    if getuid is not None:
+        return str(getuid())
+    return re.sub(r"\W", "", os.environ.get("USERNAME") or os.environ.get("USER") or "user")[:32] or "user"
+
+
 def _write_private(path: str, payload: dict) -> None:
     """Write JSON to `path` atomically, readable only by us.
 
@@ -265,7 +278,12 @@ def _load_own_json(path: str):
     fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     try:
         st = os.fstat(fd)
-        if st.st_uid != os.getuid() or not stat.S_ISREG(st.st_mode):
+        if not stat.S_ISREG(st.st_mode):
+            raise PermissionError(f"{path} is not a regular file")
+        # Windows reports st_uid == 0 for everything, so there's nothing to
+        # compare against; the per-user temp dir is the protection there.
+        getuid = getattr(os, "getuid", None)
+        if getuid is not None and st.st_uid != getuid():
             raise PermissionError(f"{path} is not ours")
         with os.fdopen(fd, "r") as fh:
             return json.load(fh)
@@ -279,7 +297,7 @@ def _load_own_json(path: str):
 
 def _pr_cache_path(repo_root: str, branch: str) -> str:
     key = hashlib.sha1(f"{repo_root}\0{branch}".encode()).hexdigest()[:16]
-    return os.path.join(tempfile.gettempdir(), f"glint-pr-{os.getuid()}-{key}.json")
+    return os.path.join(tempfile.gettempdir(), f"glint-pr-{_uid()}-{key}.json")
 
 
 def _pr_refresh(cache: str, dir_: str, branch: str) -> None:
@@ -540,7 +558,7 @@ def _rest_state_path() -> str:
     # two Claude Code windows share the same work clock. GLINT_REST_STATE moves
     # it (tests point it at a throwaway file rather than your real clock).
     return os.environ.get("GLINT_REST_STATE") or os.path.join(
-        tempfile.gettempdir(), f"glint-rest-{os.getuid()}.json"
+        tempfile.gettempdir(), f"glint-rest-{_uid()}.json"
     )
 
 

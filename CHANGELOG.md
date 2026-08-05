@@ -12,6 +12,27 @@ preferences you already chose and every unrelated setting untouched:
 curl -fsSL https://raw.githubusercontent.com/oleg-koval/glint/main/install.sh | bash
 ```
 
+## [1.2.0] — 2026-08-05
+
+### Added
+
+- **Compaction alert** (`glint_alert.py`) — an optional companion [Stop
+  hook](https://docs.claude.com/en/docs/claude-code/hooks). The status line
+  *shows* context filling up; this *tells* you, with a notification and sound at
+  75% and again at 90%, plus an inline reminder of exactly what to run and where
+  to type it. Debounced per session per tier, so it never nags turn-to-turn.
+  Same rules as the status line: zero dependencies, and any failure just means
+  no alert. `GLINT_ALERT_SILENT=1` keeps the inline note without the OS
+  notification. Setup is in the README.
+
+### Fixed
+
+- **glint now works on Windows.** `os.getuid` is Unix-only, so every temp-cache
+  path raised there and the whole line collapsed to the bare `✻ Claude`
+  fallback — it worked everywhere except the platform nobody had tested. Paths
+  now fall back to the username, and the cache ownership check is skipped where
+  the OS reports no meaningful owner.
+
 ## [1.1.0] — 2026-08-05
 
 Everything since the first release: seven new segments, a layout that groups
@@ -101,5 +122,6 @@ ahead/behind, session cost and duration, lines changed, and the live
 context-window gauge. One file, zero dependencies, graceful degradation, and a
 bare `✻ Claude` fallback so the prompt never breaks.
 
+[1.2.0]: https://github.com/oleg-koval/glint/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/oleg-koval/glint/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/oleg-koval/glint/releases/tag/v1.0.0
