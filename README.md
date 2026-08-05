@@ -3,7 +3,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/python-3.8%2B-3776AB.svg" alt="Python 3.8+">
   <img src="https://img.shields.io/badge/deps-zero-2ea44f.svg" alt="Zero dependencies">
-  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/changelog-v1.1.0-blue.svg" alt="Changelog"></a>
+  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/changelog-v1.2.0-blue.svg" alt="Changelog"></a>
 </p>
 
 <p align="center">
@@ -29,7 +29,7 @@ Segments are **grouped by topic** — `session ┃ place ┃ change ┃ budget �
 
 One Python file. Zero dependencies. ~75 ms per render. Never crashes your status bar.
 
-> **New in v1.1.0** — topic groups, a break reminder, the open-PR segment, cache-hit ratio, quota pace, and gauges that are now opt-in. See the [changelog](CHANGELOG.md).
+> **New in v1.2.0** — topic groups, a break reminder, the open-PR segment, cache-hit ratio, quota pace, gauges that are now opt-in, an optional [compaction alert hook](#companion-compaction-alert-glint_alertpy), and Windows support. See the [changelog](CHANGELOG.md).
 
 ## Features
 
