@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# glint installer — drops glint.py into ~/.claude and wires it as the Claude Code
+# glint installer: drops glint.py into ~/.claude and wires it as the Claude Code
 # status line. Idempotent: re-running just refreshes the script and the setting.
 #
 #   curl -fsSL https://raw.githubusercontent.com/oleg-koval/glint/main/install.sh | bash
@@ -126,12 +126,12 @@ if os.path.exists(settings):
         with open(settings) as f:
             cfg = json.load(f)
     except Exception:
-        # Don't clobber an unreadable settings file — back it up first.
+        # Don't clobber an unreadable settings file: back it up first.
         os.replace(settings, settings + ".bak")
         print(f"  (existing settings.json was invalid; backed up to {settings}.bak)")
 cfg["statusLine"] = {"type": "command", "command": f'python3 "{dest}"'}
 
-# Gauges are opt-in, so "no" means drop the key rather than pin it to 0 — that
+# Gauges are opt-in, so "no" means drop the key rather than pin it to 0: that
 # way a re-run with --bars, or an exported GLINT_BARS, still takes effect.
 env = cfg.get("env")
 if not isinstance(env, dict):
@@ -156,7 +156,7 @@ elif "env" in cfg:
 with open(settings, "w") as f:
     json.dump(cfg, f, indent=2)
     f.write("\n")
-print("  gauges: " + ("on (GLINT_BARS=1)" if bars else "off — re-run with --bars to enable"))
+print("  gauges: " + ("on (GLINT_BARS=1)" if bars else "off: re-run with --bars to enable"))
 print("  break reminder: " + (f"after {env.get('GLINT_REST_NUDGE', 50)} min of unbroken work"
                              if rest else "off"))
 PY

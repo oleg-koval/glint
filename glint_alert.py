@@ -131,13 +131,13 @@ def notify(title: str, body: str) -> None:
 def messages(pct: int, tokens: int, limit: int, tier: int) -> tuple[str, str, str]:
     """(notification title, notification body, inline CLI message)."""
     used = f"{tokens:,}/{limit:,} tokens"
-    title = f"🛑 Context {pct}% — compact now" if tier >= CRIT_PCT else f"⚠️ Context {pct}%"
+    title = f"🛑 Context {pct}%, compact now" if tier >= CRIT_PCT else f"⚠️ Context {pct}%"
     body = f"{used}. Type /compact in the Claude Code prompt to free the window."
     cli = (
         f"{title} ({used}).\n"
         "→ WHERE: type this in the Claude Code prompt box (not the shell):\n"
-        "    /compact                 — summarize the conversation, free the window\n"
-        "    /compact keep <what>     — same, but tell it what to preserve\n"
+        "    /compact                 summarize the conversation, free the window\n"
+        "    /compact keep <what>     same, but tell it what to preserve\n"
         "WHAT it does: replaces the back-and-forth so far with a shorter summary; "
         "open files & recent work are kept. Built-in auto-compact still backstops near 100%."
     )
