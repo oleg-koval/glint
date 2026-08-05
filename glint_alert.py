@@ -43,26 +43,51 @@ def context_tokens(transcript_path: str) -> tuple[int, str]:
     """
     try:
         with open(transcript_path, "rb") as f:
-            lines = f.readlines()
+            f.seek(0, 2)  # EOF
+            pos = f.tell()
+            lines = []
+            chunk_size = 8192
+            while pos > 0 and len(lines) < 100:
+                read_size = min(chunk_size, pos)
+                pos -= read_size
+                f.seek(pos)
+                chunk = f.read(read_size)
+                lines = chunk.split(b"\n") + lines
+                if len(lines) > 100:
+                    lines = lines[-100:]
     except Exception:
         return 0, ""
     for line in reversed(lines):
+        if not line.strip():
+            continue
         try:
             o = json.loads(line)
         except Exception:
             continue
         # Only main-thread assistant turns reflect real context — skip sub-agent
         # (sidechain) usage so a delegate's size never triggers a false alarm.
+        if not isinstance(o, dict):
+            continue
         if o.get("type") != "assistant" or o.get("isSidechain"):
             continue
-        msg = o.get("message") or {}
+        msg = o.get("message")
+        if not isinstance(msg, dict):
+            msg = {}
         u = msg.get("usage") or o.get("usage")
+        if not isinstance(u, dict):
+            continue
         if u:
-            total = (
-                int(u.get("input_tokens", 0))
-                + int(u.get("cache_creation_input_tokens", 0))
-                + int(u.get("cache_read_input_tokens", 0))
-            )
+            try:
+                input_tok = u.get("input_tokens", 0)
+                cache_create = u.get("cache_creation_input_tokens", 0)
+                cache_read = u.get("cache_read_input_tokens", 0)
+                total = (
+                    int(input_tok if isinstance(input_tok, (int, float)) else 0)
+                    + int(cache_create if isinstance(cache_create, (int, float)) else 0)
+                    + int(cache_read if isinstance(cache_read, (int, float)) else 0)
+                )
+            except (ValueError, TypeError):
+                continue
             model = msg.get("model") or o.get("model") or ""
             return total, model
     return 0, ""
@@ -91,8 +116,8 @@ def notify(title: str, body: str) -> None:
     if sys.platform != "darwin" or os.environ.get("GLINT_ALERT_SILENT"):
         return
     script = (
-        f"display notification {json.dumps(body)} "
-        f"with title {json.dumps(title)} sound name \"Submarine\""
+        f"display notification {json.dumps(body, ensure_ascii=False)} "
+        f"with title {json.dumps(title, ensure_ascii=False)} sound name \"Submarine\""
     )
     try:
         subprocess.run(
@@ -130,8 +155,9 @@ def main() -> None:
     if tokens <= 0:
         return
     limit = window_size(tokens, model, data)
-    pct = round(tokens / limit * 100)
-    tier = tier_for(pct)
+    pct_raw = tokens / limit * 100
+    tier = tier_for(pct_raw)
+    pct = round(pct_raw)
     if tier == 0:
         return
 
