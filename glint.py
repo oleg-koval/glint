@@ -26,6 +26,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 import tempfile
@@ -111,15 +112,39 @@ _ANSI = re.compile(r"\033\[[0-9;]*m")
 _OSC8 = re.compile(r"\033\]8;;[^\033\a]*(?:\033\\|\a)")
 
 
+# Codepoints below the emoji planes that terminals still draw double-wide, i.e.
+# Emoji_Presentation=Yes in UTS #51 — plus the clock/media block glint itself
+# uses (⏱ ⏩), which most terminals widen. Blanket-widening 0x2600-0x27BF was
+# wrong: ✻ (U+273B) in the model badge and ⚠ (U+26A0) in the context warning are
+# one cell each, and counting them as two made every line measure too wide, so
+# `fit` dropped segments the terminal had room for.
+_WIDE = (
+    (0x1F000, 0x1FAFF), (0x231A, 0x231B), (0x23E9, 0x23F3), (0x25FD, 0x25FE),
+    (0x2614, 0x2615), (0x2648, 0x2653), (0x267F, 0x267F), (0x2693, 0x2693),
+    (0x26A1, 0x26A1), (0x26AA, 0x26AB), (0x26BD, 0x26BE), (0x26C4, 0x26C5),
+    (0x26CE, 0x26CE), (0x26D4, 0x26D4), (0x26EA, 0x26EA), (0x26F2, 0x26F3),
+    (0x26F5, 0x26F5), (0x26FA, 0x26FA), (0x26FD, 0x26FD), (0x2705, 0x2705),
+    (0x270A, 0x270B), (0x2728, 0x2728), (0x274C, 0x274C), (0x274E, 0x274E),
+    (0x2753, 0x2755), (0x2757, 0x2757), (0x2795, 0x2797), (0x27B0, 0x27B0),
+    (0x27BF, 0x27BF), (0x2B1B, 0x2B1C), (0x2B50, 0x2B50), (0x2B55, 0x2B55),
+)
+
+
 def vis_width(s: str) -> int:
-    """Rendered cell width: ANSI is invisible, emoji take two cells."""
+    """Rendered cell width: ANSI is invisible, emoji take two cells.
+
+    A glyph counts as wide if it's emoji-by-default or carries a U+FE0F
+    presentation selector (♻️ is two cells, ♻ on its own is one).
+    """
+    text = _OSC8.sub("", _ANSI.sub("", s))
     w = 0
-    for ch in _OSC8.sub("", _ANSI.sub("", s)):
+    for i, ch in enumerate(text):
         o = ord(ch)
         if o == 0xFE0F or unicodedata.combining(ch):
             continue                      # variation selector / combining mark
-        if (0x1F300 <= o <= 0x1FAFF) or (0x2600 <= o <= 0x27BF) or (0x2B00 <= o <= 0x2BFF):
-            w += 2                        # pictographs render double-wide
+        emoji_vs = text[i + 1:i + 2] == "\ufe0f"
+        if emoji_vs or any(lo <= o <= hi for lo, hi in _WIDE):
+            w += 2
         else:
             w += 1
     return w
@@ -150,7 +175,7 @@ def term_width(default: int = 120) -> int:
     return default
 
 
-def fit(segments: list[tuple[int, int, str]], width: int) -> str:
+def fit(segments: list[tuple[float, int, str]], width: int) -> str:
     """Join segments by topic, dropping the least important until the line fits.
 
     Each segment is (priority, group, text); HIGHER priority is dropped first,
@@ -189,6 +214,17 @@ def fit(segments: list[tuple[int, int, str]], width: int) -> str:
     return render(keep)
 
 
+def _safe_url(url) -> str:
+    """An https URL, or "" — a cache file is not something to trust blindly.
+
+    The PR cache lives in a shared temp dir under a predictable name, so another
+    local user could plant one. An OSC 8 target is invisible in the terminal, and
+    a link that lies about where it goes is exactly the sort of thing worth not
+    rendering.
+    """
+    return url if isinstance(url, str) and url.startswith("https://") and "\n" not in url else ""
+
+
 def link(text: str, url: str) -> str:
     """Wrap text in an OSC 8 hyperlink so the terminal makes it clickable.
 
@@ -202,6 +238,43 @@ def link(text: str, url: str) -> str:
 
 _PR_TTL = 180.0        # seconds a cached lookup stays fresh
 _PR_NEGATIVE_TTL = 60.0  # shorter, so a PR opened moments ago shows up quickly
+
+
+def _write_private(path: str, payload: dict) -> None:
+    """Write JSON to `path` atomically, readable only by us.
+
+    O_EXCL on the temp name and 0600 on the mode keep a shared temp dir from
+    being a way to hand us someone else's content.
+    """
+    tmp = f"{path}.{os.getpid()}"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "w") as fh:
+            json.dump(payload, fh)
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _load_own_json(path: str):
+    """Parsed JSON from `path`, but only if we own it and it's a plain file."""
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        st = os.fstat(fd)
+        if st.st_uid != os.getuid() or not stat.S_ISREG(st.st_mode):
+            raise PermissionError(f"{path} is not ours")
+        with os.fdopen(fd, "r") as fh:
+            return json.load(fh)
+    except Exception:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        raise
 
 
 def _pr_cache_path(repo_root: str, branch: str) -> str:
@@ -223,12 +296,8 @@ def _pr_refresh(cache: str, dir_: str, branch: str) -> None:
     except Exception:
         rows = []
 
-    payload = {"at": time.time(), "pr": rows[0] if rows else None}
     try:
-        tmp = f"{cache}.{os.getpid()}"
-        with open(tmp, "w") as fh:
-            json.dump(payload, fh)
-        os.replace(tmp, cache)             # atomic: a reader never sees a half-written file
+        _write_private(cache, {"at": time.time(), "pr": rows[0] if rows else None})
     except Exception:
         pass
 
@@ -248,8 +317,7 @@ def pr_for_branch(dir_: str, branch: str) -> dict | None:
 
     payload, age = None, None
     try:
-        with open(cache) as fh:
-            payload = json.load(fh)
+        payload = _load_own_json(cache)
         age = time.time() - float(payload.get("at") or 0)
     except Exception:
         payload = None
@@ -259,8 +327,7 @@ def pr_for_branch(dir_: str, branch: str) -> dict | None:
         if os.environ.get("GLINT_PR_SYNC"):          # tests want a deterministic result
             _pr_refresh(cache, dir_, branch)
             try:
-                with open(cache) as fh:
-                    payload = json.load(fh)
+                payload = _load_own_json(cache)
             except Exception:
                 return None
         else:
@@ -298,7 +365,7 @@ def pr_segment(pr: dict) -> str:
     label = f"#{number}"
     if pr.get("isDraft"):
         label += " draft"
-    out = "⇄ " + c(link(label, pr.get("url") or ""), DIM if pr.get("isDraft") else BLUE)
+    out = "⇄ " + c(link(label, _safe_url(pr.get("url"))), DIM if pr.get("isDraft") else BLUE)
     return f"{out} {c(mark, color)}" if mark else out
 
 
@@ -477,7 +544,7 @@ def _rest_state_path() -> str:
     )
 
 
-def rest_minutes(now: float | None = None, path: str | None = None):
+def rest_minutes(now: float | None = None, path: str | None = None, write: bool = True):
     """Minutes worked without a break, tracking state across renders.
 
     Claude Code renders on activity, so the gap between two renders is idle time.
@@ -485,6 +552,11 @@ def rest_minutes(now: float | None = None, path: str | None = None):
     the clock — which is also the feedback that the break landed, since the
     segment disappears. Returns None if the state file can't be used; a status
     line is never worth an error.
+
+    `write=False` reads without stamping `last`. Only a render may stamp it: if
+    merely asking "how long have I been at it?" counted as activity, checking the
+    clock and then stepping away for nine minutes would lose the break the
+    previous render would otherwise have detected.
     """
     now = time.time() if now is None else now
     path = path or _rest_state_path()
@@ -492,8 +564,7 @@ def rest_minutes(now: float | None = None, path: str | None = None):
 
     start = now
     try:
-        with open(path) as f:
-            prev = json.load(f)
+        prev = _load_own_json(path)
         last, prev_start = float(prev["last"]), float(prev["start"])
         # Clock skew or a stale file from a past boot: treat as a fresh start.
         if 0 <= now - last < gap and prev_start <= now:
@@ -501,11 +572,10 @@ def rest_minutes(now: float | None = None, path: str | None = None):
     except Exception:
         pass
 
+    if not write:
+        return (now - start) / 60
     try:
-        tmp = f"{path}.{os.getpid()}"
-        with open(tmp, "w") as f:
-            json.dump({"start": start, "last": now}, f)
-        os.replace(tmp, path)
+        _write_private(path, {"start": start, "last": now})
     except Exception:
         return None
 
@@ -545,10 +615,7 @@ def rest_reset(path: str | None = None) -> bool:
     now = time.time()
     path = path or _rest_state_path()
     try:
-        tmp = f"{path}.{os.getpid()}"
-        with open(tmp, "w") as f:
-            json.dump({"start": now, "last": now}, f)
-        os.replace(tmp, path)
+        _write_private(path, {"start": now, "last": now})
         return True
     except Exception:
         return False
@@ -590,7 +657,7 @@ def main() -> None:
         print(f"glint {__version__}")
         return
     if len(sys.argv) == 2 and sys.argv[1] == "--rest-status":
-        mins = rest_minutes()
+        mins = rest_minutes(write=False)      # reading the clock is not activity
         if mins is None:
             print("rest clock unavailable")
             sys.exit(1)
@@ -598,13 +665,22 @@ def main() -> None:
               f"(nudge at {int(env_minutes('REST_NUDGE', REST_NUDGE))})")
         return
 
+    # Anything else flag-shaped is a typo. Without this it falls through to
+    # reading stdin and hangs with no output until Ctrl-D.
+    if len(sys.argv) > 1 and sys.argv[1].startswith("-"):
+        print(f"glint: unknown option {sys.argv[1]!r}\n"
+              "usage: glint.py [--rested | --rest-status | --version]\n"
+              "       (no arguments: reads Claude Code status JSON on stdin)",
+              file=sys.stderr)
+        sys.exit(2)
+
     raw = sys.stdin.read()
     try:
         d = json.loads(raw)
     except Exception:
         d = {}
 
-    segments: list[tuple[int, int, str]] = []   # (priority, group, text); see fit()
+    segments: list[tuple[float, int, str]] = []   # (priority, group, text); see fit()
 
     # ── Model badge, with reasoning effort and fast mode ──
     model = (d.get("model") or {}).get("display_name") or (d.get("model") or {}).get("id") or "Claude"

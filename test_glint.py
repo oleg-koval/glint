@@ -474,6 +474,68 @@ def test_rest_env_minutes_rejects_junk():
     del os.environ["GLINT_REST_NUDGE"]
 
 
+def test_vis_width_counts_text_glyphs_as_one_cell():
+    # ✻ (U+273B) and ⚠ (U+26A0) sit in a block full of emoji but render narrow;
+    # counting them as two made fit() drop segments the terminal had room for.
+    assert glint.vis_width("✻ S5") == 4
+    assert glint.vis_width("⚠ 12k") == 5
+    assert glint.vis_width("+1.2k/-340") == 10
+
+
+def test_vis_width_counts_emoji_as_two_cells():
+    assert glint.vis_width("📁 glint") == 8          # 2 + 1 + 5
+    assert glint.vis_width("☕ 52m") == 6            # emoji-by-default
+    assert glint.vis_width("♻️ 94%") == 6            # widened by U+FE0F
+    assert glint.vis_width("♻ 94%") == 5             # same glyph, no selector
+
+
+def test_vis_width_ignores_colour_and_hyperlinks():
+    plain = glint.vis_width("#42")
+    assert glint.vis_width(glint.c("#42", glint.BLUE)) == plain
+    assert glint.vis_width(glint.link("#42", "https://example.com/very/long/url")) == plain
+
+
+def test_only_https_urls_become_hyperlinks():
+    assert glint._safe_url("https://github.com/o/r/pull/1") == "https://github.com/o/r/pull/1"
+    for hostile in ("file:///etc/passwd", "javascript:alert(1)", "http://x",
+                    "https://x\nmore", None, 42):
+        assert glint._safe_url(hostile) == "", hostile
+
+
+def test_cache_files_are_private_and_ownership_checked():
+    with tempfile.TemporaryDirectory() as d:
+        path = str(Path(d) / "cache.json")
+        glint._write_private(path, {"at": 1, "pr": None})
+        assert oct(os.stat(path).st_mode & 0o777) == "0o600"
+        assert glint._load_own_json(path) == {"at": 1, "pr": None}
+        # a symlink is not a plain file we own
+        link_path = str(Path(d) / "linked.json")
+        os.symlink(path, link_path)
+        try:
+            glint._load_own_json(link_path)
+            raised = False
+        except OSError:
+            raised = True
+        assert raised
+
+
+def test_rest_status_does_not_count_as_activity():
+    with tempfile.TemporaryDirectory() as d:
+        state = str(Path(d) / "rest.json")
+        now = time.time()
+        _rest_state(state, start=now - 3000, last=now - 540)      # idle 9 min
+        glint.rest_minutes(now=now, path=state, write=False)
+        with open(state) as f:
+            assert round(now - json.load(f)["last"]) == 540       # untouched
+
+
+def test_unknown_flag_exits_instead_of_waiting_on_stdin():
+    p = subprocess.run([sys.executable, str(HERE / "glint.py"), "--rest"],
+                       capture_output=True, text=True, timeout=10)
+    assert p.returncode == 2
+    assert "unknown option" in p.stderr
+
+
 def test_version_flag_matches_the_changelog():
     p = subprocess.run([sys.executable, str(HERE / "glint.py"), "--version"],
                        capture_output=True, text=True)

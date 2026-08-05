@@ -66,6 +66,19 @@ them, and the first thing on the line that isn't about the machine.
 
 ### Fixed
 
+- Every line was measured too wide: `✻` in the model badge and `⚠` in the
+  context warning were counted as two cells each, so segments were dropped on
+  terminals that had room for them. Width now follows emoji presentation — a
+  glyph is wide if it's emoji-by-default or carries a `U+FE0F` selector.
+- `--rest-status` used to stamp the clock while reading it, which restarted
+  idle-gap detection: checking the status and then stepping away for nine
+  minutes lost the break. Reading is now read-only.
+- An unrecognised flag fell through to reading stdin and hung with no output
+  until `Ctrl-D`. It now prints usage and exits 2.
+- The PR cache and rest clock are written `0600` with `O_EXCL`, read back only
+  if we own them and they're plain files, and an open-PR URL is only turned into
+  a hyperlink when it's `https://` — a predictable name in a shared temp dir
+  shouldn't let another local user choose where an invisible link points.
 - The installer printed a prompt and then an error where `/dev/tty` exists but
   can't be opened (containers, CI). It now checks by opening it, and stays
   silent with no terminal attached.
