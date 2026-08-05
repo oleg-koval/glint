@@ -4,8 +4,9 @@ All notable changes to `glint`, newest first. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
-Upgrading is always the same one-liner — it overwrites `~/.claude/glint.py` and
-leaves your settings alone:
+Upgrading is always the same one-liner. It overwrites `~/.claude/glint.py` and
+rewrites `statusLine` plus the `GLINT_*` keys in `settings.json`, keeping the
+preferences you already chose and every unrelated setting untouched:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/oleg-koval/glint/main/install.sh | bash
@@ -54,15 +55,17 @@ them, and the first thing on the line that isn't about the machine.
 ### Changed
 
 - **The `▕███░░▏` gauges are now opt-in** — set `GLINT_BARS=1`, or answer the
-  question the installer asks. This is the one visible difference for existing
-  users: the coloured percentage already carried the signal, and the blocks cost
-  ~10 columns that a narrow terminal would rather spend on a segment.
+  question the installer asks. It's the only thing this release *removes* from
+  the default line: the coloured percentage already carried the signal, and the
+  blocks cost ~10 columns that a narrow terminal would rather spend on a
+  segment. (Topic groups and the break reminder change the line too, but by
+  rearranging and adding.)
 - Model badges are abbreviated to family + version (`Sonnet 4.6` → `S4.6`).
 - The context window size reported by Claude Code is trusted when present, so a
   1M session is never drawn against a 200k limit.
-- `install.sh` takes `--bars` / `--no-bars` / `--no-rest` / `--rest-nudge N`,
-  and writes your answers under `env` in `settings.json` without touching
-  unrelated keys.
+- `install.sh` takes `--bars` / `--no-bars` / `--rest` / `--no-rest` /
+  `--rest-nudge N`, and writes your answers under `env` in `settings.json`
+  without touching unrelated keys.
 
 ### Fixed
 

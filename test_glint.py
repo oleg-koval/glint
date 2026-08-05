@@ -549,9 +549,12 @@ def test_version_flag_matches_the_changelog():
                        capture_output=True, text=True)
     assert p.returncode == 0, p.stderr
     assert p.stdout.strip() == f"glint {glint.__version__}"
-    # the changelog's newest entry is the release this file claims to be
-    changelog = (HERE / "CHANGELOG.md").read_text()
-    assert f"## [{glint.__version__}]" in changelog
+    # the changelog's NEWEST entry is the release this file claims to be — a
+    # substring check would pass on a stale stamp that matches an older section
+    headings = [ln for ln in (HERE / "CHANGELOG.md").read_text().splitlines()
+                if ln.startswith("## [")]
+    assert headings, "changelog has no release headings"
+    assert headings[0].startswith(f"## [{glint.__version__}]"), headings[0]
 
 
 def test_rested_flag_zeroes_the_clock():
