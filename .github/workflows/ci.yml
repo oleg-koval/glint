@@ -18,6 +18,8 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - name: Smoke + unit tests
-        run: python3 test_glint.py
+        run: |
+          python3 test_glint.py
+          python3 test_glint_alert.py
       - name: Byte-compile check
-        run: python3 -m py_compile glint.py
+        run: python3 -m py_compile glint.py glint_alert.py
