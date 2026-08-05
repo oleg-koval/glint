@@ -22,10 +22,49 @@ CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 DEST="$CLAUDE_DIR/glint.py"
 SETTINGS="$CLAUDE_DIR/settings.json"
 
-# unset = ask; 1/0 = decided. An exported GLINT_BARS counts as a decision.
-BARS="${GLINT_BARS:-}"
-REST="${GLINT_REST:-1}"
-REST_NUDGE="${GLINT_REST_NUDGE:-}"
+# Preferences already in settings.json are the starting point, so upgrading
+# ("curl | bash" again, with no flags) keeps what you chose last time instead of
+# resetting it. Precedence: flags > exported env > stored > default.
+read_stored() {
+  [ -f "$SETTINGS" ] || return 0
+  python3 -c '
+import json, sys
+try:
+    with open(sys.argv[1]) as f:
+        env = (json.load(f) or {}).get("env") or {}
+except Exception:
+    env = {}
+def truthy(v):
+    return "1" if str(v).strip().lower() in ("1", "true", "yes", "on") else "0"
+for key, name in (("GLINT_BARS", "STORED_BARS"), ("GLINT_REST", "STORED_REST")):
+    if key in env:
+        print(name + "=" + truthy(env[key]))
+nudge = str(env.get("GLINT_REST_NUDGE", "")).strip()
+if nudge.isdigit():
+    print("STORED_NUDGE=" + nudge)
+' "$SETTINGS"
+}
+STORED_BARS=""; STORED_REST=""; STORED_NUDGE=""
+eval "$(read_stored)"
+
+# unset = ask; 1/0 = decided. An exported GLINT_BARS counts as a decision, and
+# so does one already recorded in settings.json.
+BARS="${GLINT_BARS:-$STORED_BARS}"
+REST="${GLINT_REST:-${STORED_REST:-1}}"
+REST_NUDGE="${GLINT_REST_NUDGE:-$STORED_NUDGE}"
+
+# Accept the spellings glint itself accepts, so GLINT_BARS=true doesn't read as
+# "decided: off" further down.
+lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+case "$(lower "$BARS")" in
+  1|true|yes|on) BARS=1 ;;
+  "") BARS="" ;;
+  *) BARS=0 ;;
+esac
+case "$(lower "$REST")" in
+  0|false|no|off) REST=0 ;;
+  *) REST=1 ;;
+esac
 while [ $# -gt 0 ]; do
   case "$1" in
     --bars) BARS=1 ;;
@@ -118,15 +157,19 @@ with open(settings, "w") as f:
     json.dump(cfg, f, indent=2)
     f.write("\n")
 print("  gauges: " + ("on (GLINT_BARS=1)" if bars else "off — re-run with --bars to enable"))
-print("  break reminder: " + (f"after {rest_nudge or 50} min of unbroken work" if rest else "off"))
+print("  break reminder: " + (f"after {env.get('GLINT_REST_NUDGE', 50)} min of unbroken work"
+                             if rest else "off"))
 PY
+
+eval "$(read_stored)"
+REST_NUDGE="${STORED_NUDGE:-50}"
 
 echo "✓ glint installed. Restart Claude Code (or open a new session) to see it."
 
 if [ "$REST" = "1" ]; then
   cat <<EOF
 
-  Break reminder: 🪑 after 30 min · ☕ break after ${REST_NUDGE:-50} · 🛑 stand up after 90.
+  Break reminder: 🪑 clock at 30 min · ☕ break at ${REST_NUDGE} · 🛑 stand up at 1.8x that.
   Walking away for 10 min resets it. Took a shorter break? Tell it so:
 
     python3 "$DEST" --rested        # clock back to zero

@@ -25,6 +25,10 @@ def render(payload: dict, **env_overrides: str) -> str:
     # The rest clock is shared state in the temp dir; leave the developer's real
     # one alone unless a test opts in with its own GLINT_REST_STATE.
     env["GLINT_REST"] = "0"
+    # Payloads whose cwd is a git repo would otherwise reach pr_for_branch, which
+    # spawns a detached refresh plus a `gh` network call and writes the real
+    # shared cache — orphan processes and state outside the test's control.
+    env["GLINT_PR"] = "0"
     env.update(env_overrides)
     p = subprocess.run(
         [sys.executable, str(HERE / "glint.py")],
@@ -312,14 +316,16 @@ BARS_PAYLOAD = {
 
 def test_opt_in_defaults_to_off():
     os.environ.pop("GLINT_NEWTHING", None)
-    assert glint.opt_in("NEWTHING") is False
-    for on in ("1", "true", "yes", "on", "ON"):
-        os.environ["GLINT_NEWTHING"] = on
-        assert glint.opt_in("NEWTHING") is True, on
-    for off in ("0", "false", "no", "off", "", "maybe"):
-        os.environ["GLINT_NEWTHING"] = off
-        assert glint.opt_in("NEWTHING") is False, off
-    os.environ.pop("GLINT_NEWTHING", None)
+    try:
+        assert glint.opt_in("NEWTHING") is False
+        for on in ("1", "true", "yes", "on", "ON"):
+            os.environ["GLINT_NEWTHING"] = on
+            assert glint.opt_in("NEWTHING") is True, on
+        for off in ("0", "false", "no", "off", "", "maybe"):
+            os.environ["GLINT_NEWTHING"] = off
+            assert glint.opt_in("NEWTHING") is False, off
+    finally:                     # a failed assert must not leak into later tests
+        os.environ.pop("GLINT_NEWTHING", None)
 
 
 def test_gauges_hidden_by_default_but_percentages_stay():
@@ -468,10 +474,12 @@ def test_rest_thresholds_follow_the_nudge_env():
 
 
 def test_rest_env_minutes_rejects_junk():
-    for bad in ("", "abc", "0", "-5"):
-        os.environ["GLINT_REST_NUDGE"] = bad
-        assert glint.env_minutes("REST_NUDGE", 50.0) == 50.0, bad
-    del os.environ["GLINT_REST_NUDGE"]
+    try:
+        for bad in ("", "abc", "0", "-5"):
+            os.environ["GLINT_REST_NUDGE"] = bad
+            assert glint.env_minutes("REST_NUDGE", 50.0) == 50.0, bad
+    finally:
+        os.environ.pop("GLINT_REST_NUDGE", None)
 
 
 def test_vis_width_counts_text_glyphs_as_one_cell():
@@ -574,7 +582,8 @@ def test_rest_status_reports_without_resetting():
         assert p.returncode == 0, p.stderr
         assert "42 min" in p.stdout
         with open(state) as f:
-            assert json.load(f)["last"] - json.load(open(state))["start"] > 40 * 60
+            after = json.load(f)
+        assert after["last"] - after["start"] > 40 * 60      # clock still running
 
 
 def test_rest_reset_reports_failure_instead_of_lying():

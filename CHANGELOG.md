@@ -79,6 +79,11 @@ them, and the first thing on the line that isn't about the machine.
   if we own them and they're plain files, and an open-PR URL is only turned into
   a hyperlink when it's `https://` — a predictable name in a shared temp dir
   shouldn't let another local user choose where an invisible link points.
+- Re-running the installer (i.e. upgrading) reset your stored preferences: a
+  recorded `GLINT_BARS=1` or `GLINT_REST=0` was dropped when the new run didn't
+  mention it. Stored settings are now the starting point, with flags and
+  exported variables taking precedence, and truthy spellings (`true`, `yes`,
+  `on`) are accepted everywhere.
 - The installer printed a prompt and then an error where `/dev/tty` exists but
   can't be opened (containers, CI). It now checks by opening it, and stays
   silent with no terminal attached.

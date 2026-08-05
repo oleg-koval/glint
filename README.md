@@ -99,7 +99,7 @@ Claude Code runs your `statusLine.command` on every render and pipes it a JSON b
 |----------|---------|--------|
 | `GLINT_BARS` | off | `1` adds the `▕███░░▏` gauges beside the context and rate-limit percentages |
 | `GLINT_REST` | on | `0` hides the break reminder entirely |
-| `GLINT_REST_NUDGE` | `50` | Minutes of unbroken work before the yellow `☕`. The quiet `🪑` starts at 60% of this, the red `🛑` at 1.8× |
+| `GLINT_REST_NUDGE` | `50` | Minutes of unbroken work before the yellow `☕`. The red `🛑` follows at 1.8× it; the quiet `🪑` starts at 60% of it **or 30 minutes, whichever is sooner** (so raising the nudge doesn't hide the clock for an hour) |
 | `GLINT_REST_SHOW` / `GLINT_REST_HARD` | `30` / `90` | Override those two derived thresholds directly |
 | `GLINT_REST_GAP` | `10` | Minutes of no renders that count as a break and reset the clock |
 | `GLINT_REST_STATE` | temp dir | Where the work clock is kept (one file per user, shared by all your windows) |
