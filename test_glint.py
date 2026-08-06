@@ -305,6 +305,281 @@ def test_rate_limits_hidden_when_absent():
     assert "5h" not in out and "7d" not in out
 
 
+# ── harness adapters ──────────────────────────────────────────────────────────
+
+def _codex_session(home: str, cwd: str, *, model="gpt-5.6-sol", effort="medium",
+                   tokens=20173, cached=9984, window=258400, minutes=10080,
+                   used=63.0, resets=None) -> None:
+    """Write a rollout log shaped like the real thing (verified against ~/.codex)."""
+    day = Path(home, "sessions", "2026", "08", "06")
+    day.mkdir(parents=True, exist_ok=True)
+    recs = [
+        {"type": "session_meta", "payload": {"type": "session_meta", "cwd": cwd,
+                                             "session_id": "abc", "cli_version": "0.146.0"}},
+        {"type": "turn_context", "payload": {"type": "turn_context", "cwd": cwd,
+                                             "model": model, "effort": effort}},
+        {"type": "event_msg", "payload": {"type": "token_count", "info": {
+            "total_token_usage": {"input_tokens": tokens, "total_tokens": tokens},
+            "last_token_usage": {"input_tokens": tokens - 69, "cached_input_tokens": cached,
+                                 "total_tokens": tokens},
+            "model_context_window": window},
+            "rate_limits": {"primary": {"used_percent": used, "window_minutes": minutes,
+                                        "resets_at": resets or (time.time() + 3600)},
+                            "secondary": None, "plan_type": "plus"}}},
+    ]
+    with open(day / "rollout-2026-08-06T10-00-00-abc.jsonl", "w") as f:
+        for r in recs:
+            f.write(json.dumps(r) + "\n")
+
+
+def test_codex_payload_translates_a_real_session_shape():
+    with tempfile.TemporaryDirectory() as home:
+        _codex_session(home, "/tmp/proj")
+        os.environ["CODEX_HOME"] = home
+        try:
+            p = glint.codex_payload("/tmp/proj")
+        finally:
+            os.environ.pop("CODEX_HOME", None)
+    assert p["model"]["display_name"] == "gpt-5.6-sol"
+    assert p["effort"]["level"] == "medium"
+    assert p["context_window"] == {"total_input_tokens": 20173, "context_window_size": 258400}
+    assert p["cache"] == {"total": 20104, "read": 9984}
+    # 10080 minutes is the weekly window, not the 5h one
+    assert set(p["rate_limits"]) == {"seven_day"}
+    assert p["rate_limits"]["seven_day"]["used_percentage"] == 63.0
+
+
+def test_codex_quota_buckets_by_window_length():
+    with tempfile.TemporaryDirectory() as home:
+        _codex_session(home, "/tmp/proj", minutes=300)
+        os.environ["CODEX_HOME"] = home
+        try:
+            p = glint.codex_payload("/tmp/proj")
+        finally:
+            os.environ.pop("CODEX_HOME", None)
+    assert set(p["rate_limits"]) == {"five_hour"}
+
+
+def test_codex_prefers_a_session_rooted_at_this_tree():
+    with tempfile.TemporaryDirectory() as home:
+        _codex_session(home, "/tmp/other", model="gpt-5.3")
+        time.sleep(0.01)
+        day = Path(home, "sessions", "2026", "08", "06")
+        recs = [
+            {"type": "session_meta", "payload": {"type": "session_meta", "cwd": "/tmp/proj"}},
+            {"type": "turn_context", "payload": {"type": "turn_context", "model": "gpt-5.6-sol"}},
+        ]
+        with open(day / "rollout-2026-08-06T11-00-00-def.jsonl", "w") as f:
+            for r in recs:
+                f.write(json.dumps(r) + "\n")
+        os.environ["CODEX_HOME"] = home
+        try:
+            deep = glint.codex_payload("/tmp/proj/sub/dir")   # inside the tree
+            assert deep["model"]["display_name"] == "gpt-5.6-sol"
+            elsewhere = glint.codex_payload("/nowhere")       # falls back to newest
+            assert "model" in elsewhere
+        finally:
+            os.environ.pop("CODEX_HOME", None)
+
+
+def test_codex_payload_survives_an_empty_or_missing_home():
+    with tempfile.TemporaryDirectory() as home:
+        os.environ["CODEX_HOME"] = home
+        try:
+            assert glint.codex_payload("/tmp/proj") == {"cwd": "/tmp/proj"}
+        finally:
+            os.environ.pop("CODEX_HOME", None)
+    os.environ["CODEX_HOME"] = "/nope/not/here"
+    try:
+        assert glint.codex_payload("/tmp/proj") == {"cwd": "/tmp/proj"}
+    finally:
+        os.environ.pop("CODEX_HOME", None)
+
+
+def test_codex_renders_a_line_end_to_end():
+    with tempfile.TemporaryDirectory() as home:
+        _codex_session(home, "/tmp", used=63.0, minutes=300)
+        env = {k: v for k, v in os.environ.items() if not k.startswith("GLINT_")}
+        env.update({"CODEX_HOME": home, "GLINT_REST": "0", "GLINT_WATER": "0",
+                    "GLINT_REST_STATE": str(Path(home) / "rest.json"), "GLINT_PR": "0", "COLUMNS": "160"})
+        p = subprocess.run([sys.executable, str(HERE / "glint.py"), "--harness", "codex"],
+                           capture_output=True, text=True, env=env)
+        assert p.returncode == 0, p.stderr
+        plain = glint._ANSI.sub("", p.stdout)
+        assert "G5.6-sol" in plain          # gpt- prefix dropped, codename kept
+        assert "8%" in plain and "20k/258k" in plain
+        assert "5h 63%" in plain
+
+
+def test_cache_ratio_can_be_supplied_by_an_adapter():
+    with tempfile.TemporaryDirectory() as d:
+        os.environ["GLINT_REST_STATE"] = str(Path(d) / "rest.json")
+        os.environ["GLINT_WATER"] = "0"
+        try:
+            line = glint._ANSI.sub("", glint.build_line(
+                {"model": {"display_name": "Sonnet 5"}, "cwd": "/tmp",
+                 "cache": {"total": 1000, "read": 940}}, 200))
+            assert "94%" in line
+        finally:
+            os.environ.pop("GLINT_REST_STATE", None)
+            os.environ.pop("GLINT_WATER", None)
+
+
+def test_unknown_harness_is_rejected():
+    p = subprocess.run([sys.executable, str(HERE / "glint.py"), "--harness", "nope"],
+                       capture_output=True, text=True, input="{}")
+    assert p.returncode == 2
+    assert "unknown harness" in p.stderr
+
+
+# ── tmux output ───────────────────────────────────────────────────────────────
+
+def test_tmux_translates_colours_and_escapes_hashes():
+    out = glint.to_tmux(glint.c("main", glint.GREEN) + " #8" + glint.c("!", glint.RED, bold=True))
+    assert "#[fg=colour114]" in out
+    assert "#[fg=colour174,bold]" in out
+    assert "#[default]" in out
+    assert "##8" in out                      # a literal # must be doubled for tmux
+    assert "\033[" not in out and "\x1b[" not in out
+
+
+def test_tmux_drops_hyperlinks_but_keeps_their_text():
+    out = glint.to_tmux(glint.link("#42", "https://example.com/pull/42"))
+    assert "##42" in out
+    assert "example.com" not in out
+
+
+# ── long branch names ─────────────────────────────────────────────────────────
+
+def test_short_branches_are_untouched():
+    for name in ("main", "staging", "feat/small-thing"):
+        assert glint.shorten_branch(name) == name
+
+
+def test_long_branch_keeps_both_ends():
+    real = "dubo-175-retire-k8s-lease-leader-election-from-the-sync-path-kill-gic"
+    out = glint.shorten_branch(real)
+    assert len(out) == 28                      # the default budget
+    assert out.startswith("dubo-175")          # ticket prefix survives
+    assert out.endswith("kill-gic")            # so does the subject
+    assert "…" in out
+
+
+def test_branch_budget_is_configurable_and_has_a_floor():
+    real = "dubo-175-retire-k8s-lease-leader-election"
+    out = glint.shorten_branch(real, 16)
+    assert glint.vis_width(out) <= 16
+    out = glint.shorten_branch(real, 2)
+    assert glint.vis_width(out) <= 8      # floor, still readable
+
+
+def test_branch_with_wide_unicode_respects_display_width():
+    # Wide Unicode characters (emoji, CJK) take 2 cells; truncation must measure
+    # display width, not code-point length, to stay within the limit.
+    branch = "feat-📦-package-manager-🚀-deploy"
+    out = glint.shorten_branch(branch, 28)
+    assert glint.vis_width(out) <= 28
+    assert "📦" in out or "🚀" in out  # at least one emoji survives
+    # Verify the truncated branch still contains prefix and suffix.
+    assert out.startswith("feat") or "deploy" in out
+
+
+def test_dirty_and_tracking_markers_survive_a_long_branch():
+    # The bug: a 69-char branch pushed ●11 ↓34 off the line entirely.
+    repo = tempfile.mkdtemp()
+    branch = "dubo-175-retire-k8s-lease-leader-election-from-the-sync-path-kill-gic"
+    Path(repo, "seed.txt").write_text("seed")
+    # An unborn branch makes `rev-parse --abbrev-ref HEAD` answer "HEAD", so the
+    # git segment never renders: the fixture needs a commit to be a real repo.
+    for cmd in (["init", "-q", "-b", branch], ["config", "user.email", "t@t"],
+                ["config", "user.name", "t"], ["add", "."],
+                ["commit", "-qm", "seed", "--no-gpg-sign"]):
+        subprocess.run(["git", "-C", repo, *cmd], capture_output=True)
+    Path(repo, "dirty.txt").write_text("x")
+    out = render({"model": {"display_name": "Sonnet 5"}, "cwd": repo}, COLUMNS="100")
+    assert "…" in out and "dubo-175" in out
+    assert "●1" in out                         # the count made it onto the line
+    assert branch not in out                   # not printed in full
+
+
+# ── hydration ─────────────────────────────────────────────────────────────────
+
+def test_water_clock_accumulates_and_survives_short_gaps():
+    with tempfile.TemporaryDirectory() as d:
+        state = str(Path(d) / "rest.json")
+        now = time.time()
+        _rest_state_full(state, start=now - 3600, last=now - 60, water=now - 2700)
+        both = glint.clocks(now=now, path=state)
+        assert round(both["work"]) == 60
+        assert round(both["water"]) == 45
+
+
+def test_a_break_refills_the_glass():
+    with tempfile.TemporaryDirectory() as d:
+        state = str(Path(d) / "rest.json")
+        now = time.time()
+        # away for 11 minutes: both clocks restart
+        _rest_state_full(state, start=now - 7200, last=now - 660, water=now - 7200)
+        both = glint.clocks(now=now, path=state)
+        assert both["work"] == 0.0 and both["water"] == 0.0
+
+
+def test_water_segment_thresholds():
+    assert glint.water_segment(44) == ""
+    assert "💧" in glint.water_segment(47)
+    assert "drink" not in glint.water_segment(47)       # gentle at one interval
+    assert "drink" in glint.water_segment(95)           # firmer at two
+    assert "1h40m" in glint.water_segment(100)
+
+
+def test_water_interval_follows_the_env():
+    os.environ["GLINT_WATER_EVERY"] = "20"
+    try:
+        assert "💧" in glint.water_segment(21)
+        assert glint.water_segment(19) == ""
+    finally:
+        os.environ.pop("GLINT_WATER_EVERY", None)
+
+
+def test_drank_resets_water_but_not_the_work_clock():
+    with tempfile.TemporaryDirectory() as d:
+        state = str(Path(d) / "rest.json")
+        now = time.time()
+        _rest_state_full(state, start=now - 3600, last=now, water=now - 3600)
+        env = {k: v for k, v in os.environ.items() if not k.startswith("GLINT_")}
+        env["GLINT_REST_STATE"] = state
+        p = subprocess.run([sys.executable, str(HERE / "glint.py"), "--drank"],
+                           capture_output=True, text=True, env=env)
+        assert p.returncode == 0, p.stderr
+        assert "water clock back to zero" in p.stdout
+        both = glint.clocks(path=state, write=False)
+        assert round(both["work"]) == 60                # still working
+        assert round(both["water"]) == 0                # glass refilled
+
+
+def test_rested_resets_both_clocks():
+    with tempfile.TemporaryDirectory() as d:
+        state = str(Path(d) / "rest.json")
+        now = time.time()
+        _rest_state_full(state, start=now - 3600, last=now, water=now - 3600)
+        assert glint.rest_reset(path=state) is True
+        both = glint.clocks(path=state, write=False)
+        assert round(both["work"]) == 0 and round(both["water"]) == 0
+
+
+def test_water_hidden_when_switched_off():
+    with tempfile.TemporaryDirectory() as d:
+        state = str(Path(d) / "rest.json")
+        now = time.time()
+        _rest_state_full(state, start=now - 3600, last=now, water=now - 3600)
+        on = render({"model": {"display_name": "Sonnet 5"}, "cwd": "/tmp"},
+                    GLINT_REST_STATE=state, GLINT_REST="1")
+        assert "💧" in on
+        off = render({"model": {"display_name": "Sonnet 5"}, "cwd": "/tmp"},
+                     GLINT_REST_STATE=state, GLINT_REST="1", GLINT_WATER="0")
+        assert "💧" not in off
+
+
 # ── opt-in gauges ─────────────────────────────────────────────────────────────
 
 BARS_PAYLOAD = {
@@ -387,6 +662,11 @@ def test_dropping_a_whole_group_drops_its_rule():
 def _rest_state(tmp: str, start: float, last: float) -> None:
     with open(tmp, "w") as f:
         json.dump({"start": start, "last": last}, f)
+
+
+def _rest_state_full(tmp: str, start: float, last: float, water: float) -> None:
+    with open(tmp, "w") as f:
+        json.dump({"start": start, "last": last, "water": water}, f)
 
 
 def test_rest_clock_starts_at_zero():

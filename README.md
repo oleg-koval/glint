@@ -3,7 +3,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/python-3.8%2B-3776AB.svg" alt="Python 3.8+">
   <img src="https://img.shields.io/badge/deps-zero-2ea44f.svg" alt="Zero dependencies">
-  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/changelog-v1.2.0-blue.svg" alt="Changelog"></a>
+  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/changelog-v1.3.0-blue.svg" alt="Changelog"></a>
 </p>
 
 <p align="center">
@@ -29,7 +29,7 @@ Segments are **grouped by topic** (`session ┃ place ┃ change ┃ budget ┃ 
 
 One Python file. Zero dependencies. ~75 ms per render. Never crashes your status bar.
 
-> **New in v1.2.0**: topic groups, a break reminder, the open-PR segment, cache-hit ratio, quota pace, gauges that are now opt-in, an optional [compaction alert hook](#companion-compaction-alert-glint_alertpy), and Windows support. See the [changelog](CHANGELOG.md).
+> **New in v1.3.0**: a hydration reminder, middle-elided long branch names, topic groups, a break reminder, the open-PR segment, cache-hit ratio, quota pace, gauges that are now opt-in, an optional [compaction alert hook](#companion-compaction-alert-glint_alertpy), and Windows support. See the [changelog](CHANGELOG.md).
 
 ## Features
 
@@ -40,12 +40,13 @@ One Python file. Zero dependencies. ~75 ms per render. Never crashes your status
 | ⏩ **Fast mode** | `⏩` | Shown when fast mode is on |
 | 📁 **Directory** | `my-repo` | Workspace basename, `~` for home |
 | 🌳 **Worktree** | `wt-refactor` | Active git worktree: from the payload's `worktree.name`, or detected via git on older versions. Hidden unless it differs from the directory segment, so normal repos stay quiet |
-| 🌿 **Git** | `main ●3 ↑1 ↓2` | Branch + uncommitted count + ahead/behind upstream. **Green when clean, yellow when dirty** |
+| 🌿 **Git** | `main ●3 ↑1 ↓2` | Branch + uncommitted count + ahead/behind upstream. **Green when clean, yellow when dirty**. A branch longer than 28 cells is elided in the middle (`dubo-175-retir…path-kill-gic`) so the counts you watch while working never get pushed off the line; budget is `GLINT_BRANCH_MAX` |
 | 💰 **Cost · time** | `$0.42 · 4m` | Session spend and duration. **Green < $1, gold < $5, red beyond** |
 | **Lines** | `+1.2k/-340` | Lines added / removed this session, `k`-shortened |
 | 🧠 **Context** | `75% 150k/200k → 50k left` | **Live** token usage. Gradient **green → yellow → red** as you fill up. From 70% a `→ 50k left` runway countdown appears; from 85% it turns into a bold red `⚠ 12k left` so you compact before you're forced to |
 | ♻️ **Cache hit** | `♻️ 94%` | Share of your context served from prompt cache (cache reads are ~10x cheaper than fresh input). **Green ≥ 80%, yellow ≥ 50%, red below** |
 | ⏱📅 **Rate limits** | `⏱5h 88% ↻59m ⚡110%` | Session (5h) and weekly (7d) rate-limit usage, same gradient, plus `↻` time until each window resets. Hidden if your plan doesn't report them |
+| 💧 **Hydration** | `💧 47m` | Minutes since your last drink, hidden until 45 of them, firmer (`💧 1h40m drink`) at twice that. Shares the break state file; a break resets both clocks, so getting up resets it; `--drank` covers drinking at your desk |
 | 🪑☕🛑 **Rest** | `☕ 52m break` | Minutes of **unbroken work**, hidden until 30 of them. Dim `🪑 34m` while you're fine, `☕ 52m break` at 50 minutes, bold red `🛑 1h35m stand up` at 90: each rung says what it wants, and the later ones survive a narrow line where the cost segment gets dropped. Reset it by walking away for 10 minutes, or tell it directly with `--rested` |
 | ▕███░░▏ **Gauges** | `36% ▕███░░░░░▏` | **Opt-in** (`GLINT_BARS=1`). Draws a block gauge beside the context and rate-limit percentages. Off by default: the colour already carries the signal, and the blocks cost ~10 columns a narrow window would rather spend on a segment |
 | ⚡ **Pace** | `⚡110%` | Appears **only when you're burning faster than the window elapses**: the share of quota you'd need by reset at the current rate. `⚡110%` = you run out ~10% early. Yellow past 105%, bold red past 150% |
@@ -130,6 +131,9 @@ Thresholds live in the `WARN_PCT` / `CRIT_PCT` constants at the top of the file.
 | `GLINT_REST_NUDGE` | `50` | Minutes of unbroken work before the yellow `☕`. The red `🛑` follows at 1.8× it; the quiet `🪑` starts at 60% of it **or 30 minutes, whichever is sooner** (so raising the nudge doesn't hide the clock for an hour) |
 | `GLINT_REST_SHOW` / `GLINT_REST_HARD` | `30` / `90` | Override those two derived thresholds directly |
 | `GLINT_REST_GAP` | `10` | Minutes of no renders that count as a break and reset the clock |
+| `GLINT_WATER` | on | `0` hides the hydration reminder |
+| `GLINT_WATER_EVERY` | `45` | Minutes between drinks before `💧` appears; it firms up at 2x |
+| `GLINT_BRANCH_MAX` | `28` | Cells a branch name may fill before its middle is elided |
 | `GLINT_REST_STATE` | temp dir | Where the work clock is kept (one file per user, shared by all your windows) |
 | `GLINT_COST` | on | `0` hides the cost · duration segment |
 | `GLINT_LINES` | on | `0` hides lines added/removed |
@@ -169,8 +173,9 @@ The thresholds aren't a single method, they're where three lines of evidence agr
 Walking away for ten minutes resets the clock by itself. A shorter stretch break doesn't, so there's a button for it:
 
 ```bash
-python3 ~/.claude/glint.py --rested        # ☕ break logged: work clock back to zero
-python3 ~/.claude/glint.py --rest-status   # 42 min since your last break (nudge at 50)
+python3 ~/.claude/glint.py --rested        # break: resets the work clock and the water clock
+python3 ~/.claude/glint.py --drank         # drank at my desk: resets water only
+python3 ~/.claude/glint.py --rest-status   # prints both clocks and both thresholds
 ```
 
 Worth an alias (`alias rested='python3 ~/.claude/glint.py --rested'`) and inside Claude Code you can run it without leaving the session by typing `!rested`. The reminder disappearing is the receipt.
@@ -182,6 +187,42 @@ Treat them as defaults, not doctrine: `GLINT_REST_NUDGE=40` moves the whole ladd
 - **Claude Code** with status-line support
 - **Python 3.8+** (standard library only: no `pip install`)
 - **git** (optional; the branch segment simply hides without it)
+
+## Other harnesses (Codex CLI)
+
+Claude Code is currently the only agent CLI that lets you supply the status line as a command. Verified in August 2026:
+
+| Harness | Status line | External command hook |
+|---------|-------------|-----------------------|
+| Claude Code | `statusLine.command`, session JSON on stdin | **yes** |
+| Codex CLI 0.146 | built-in `tui.status_line`, a fixed set of item ids | no ([#20244](https://github.com/openai/codex/issues/20244), [#17827](https://github.com/openai/codex/issues/17827)) |
+| opencode 1.17 | built-in TUI bar | no ([#30295](https://github.com/anomalyco/opencode/issues/30295) is a proposal; `statusLine` appears nowhere in the shipped config schema) |
+| Hermes Agent | built-in bar, width-adaptive | no |
+| Cursor CLI | - | no |
+
+Codex does not need a hook, though, because it already writes everything worth showing to `~/.codex/sessions/<date>/rollout-*.jsonl`. glint reads that and renders into your **tmux status bar** instead of Codex's own:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/oleg-koval/glint/main/install-codex.sh | bash
+```
+
+```text
+✻ G5.6-sol M  │  📁 glint  🌿 dubo-175-retir…kill-gic ●3  │  🧠 8% 20k/258k  ♻️ 50%  📅7d 100% ↻4.1d ⚡240%  │  ☕ 52m break  💧 47m
+```
+
+Use `--print` first to see the tmux block and a live preview without changing anything. The installer keeps a marked, idempotent block in `~/.tmux.conf`, so re-running refreshes it rather than stacking copies, and it leaves the rest of your config alone.
+
+What you get and what you do not:
+
+- **Works**: model with reasoning effort, context against the real `model_context_window`, cached share of the last turn, quota windows with reset ETAs and the pace marker, plus everything that never needed the harness (directory, git, break, hydration).
+- **Missing**: session cost and lines changed. Codex does not record them, and glint would rather omit a segment than invent one.
+- Quota is bucketed by the window length Codex reports (`window_minutes`), so a 300-minute window shows as `⏱5h` and 10080 as `📅7d`.
+
+For any other tool, the harness-independent half still works next to it, including in a plain shell:
+
+```bash
+python3 ~/.claude/glint.py --harness codex --tmux   # or drop --harness for stdin JSON
+```
 
 ## Upgrading
 
