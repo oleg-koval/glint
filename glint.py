@@ -841,8 +841,6 @@ def codex_payload(cwd: str | None = None) -> dict:
     chosen = None
     for path in _codex_sessions():
         try:
-            with open(path, encoding="utf-8", errors="replace") as f:
-        try:
             with open(path, encoding="utf-8", errors="replace") as fh:
                 head = list(_records(fh.read(65536)))
         except OSError:
