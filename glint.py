@@ -431,6 +431,10 @@ def model_short(name: str) -> str:
         if fam in low:
             m = re.search(r"(\d+(?:[.\-]\d+)?)", n[low.index(fam) + len(fam):])
             return f"{initial}{m.group(1).replace('-', '.')}" if m else initial
+    # Codex model ids look like "gpt-5.6-sol": keep the codename, since that is
+    # the part that distinguishes them, and drop the vendor prefix.
+    if low.startswith("gpt-"):
+        return "G" + n[4:]
     return n or name
 
 
@@ -768,6 +772,150 @@ def bar(pct: float, color: int, width: int = 8) -> str:
     return " " + c(gauge(pct, width), color) if opt_in("BARS") else ""
 
 
+USAGE = (
+    "usage: glint.py [--harness claude|codex] [--tmux] [--width N]\n"
+    "       glint.py --rested | --drank | --rest-status | --version\n"
+    "       (no arguments: reads Claude Code status JSON on stdin)"
+)
+
+
+def codex_home() -> str:
+    return os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex")
+
+
+def _tail_text(path: str, max_bytes: int = 256 * 1024) -> str:
+    """The last `max_bytes` of a file, starting at a line boundary.
+
+    A long Codex session runs to megabytes and we want the newest records, so
+    reading it whole on every repaint would be the slow thing in the render.
+    """
+    with open(path, "rb") as fh:
+        fh.seek(0, os.SEEK_END)
+        size = fh.tell()
+        fh.seek(max(0, size - max_bytes))
+        chunk = fh.read()
+    if size > max_bytes:
+        chunk = chunk.split(b"\n", 1)[-1]       # drop the partial first line
+    return chunk.decode("utf-8", "replace")
+
+
+def _records(text: str):
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith("{"):
+            try:
+                yield json.loads(line)
+            except Exception:
+                continue
+
+
+def _codex_sessions(limit: int = 8) -> list[str]:
+    """Rollout logs, newest first. Only the few newest can matter."""
+    root = os.path.join(codex_home(), "sessions")
+    found = []
+    for dirpath, _dirs, files in os.walk(root):
+        for name in files:
+            if name.startswith("rollout-") and name.endswith(".jsonl"):
+                path = os.path.join(dirpath, name)
+                try:
+                    found.append((os.path.getmtime(path), path))
+                except OSError:
+                    continue
+    found.sort(reverse=True)
+    return [p for _mtime, p in found[:limit]]
+
+
+def codex_payload(cwd: str | None = None) -> dict:
+    """Newest Codex session, translated into Claude Code's payload shape.
+
+    Codex has no status-line hook (its own bar takes a fixed list of built-in
+    items), but it writes everything worth showing to
+    `~/.codex/sessions/<date>/rollout-*.jsonl`: token counts against the model
+    window, the cached share of them, and quota windows with reset times. So the
+    adapter reads that and every segment downstream stays unchanged.
+    """
+    cwd = cwd or os.getcwd()
+    payload: dict = {"cwd": cwd}
+
+    chosen = None
+    for path in _codex_sessions():
+        try:
+            head = list(_records(open(path, encoding="utf-8", errors="replace").read(65536)))
+        except OSError:
+            continue
+        meta = next((r.get("payload", {}) for r in head
+                     if r.get("type") == "session_meta"), {})
+        session_cwd = meta.get("cwd") or ""
+        if chosen is None:
+            chosen = (path, head)                # newest, as the fallback
+        if session_cwd and (cwd == session_cwd or cwd.startswith(session_cwd.rstrip("/") + "/")):
+            chosen = (path, head)                # a session rooted at this tree wins
+            break
+    if chosen is None:
+        return payload
+
+    path, head = chosen
+    records = head + list(_records(_tail_text(path)))
+
+    model = effort = ""
+    usage: dict = {}
+    limits: dict = {}
+    for rec in records:                          # last write wins: newest state
+        body = rec.get("payload") or {}
+        if body.get("type") == "turn_context" or rec.get("type") == "turn_context":
+            model = body.get("model") or model
+            effort = body.get("effort") or effort
+        if body.get("type") == "token_count":
+            info = body.get("info") or {}
+            usage = info or usage
+            limits = body.get("rate_limits") or limits
+
+    if model:
+        payload["model"] = {"display_name": model, "id": model}
+    if effort:
+        payload["effort"] = {"level": effort}
+
+    last = (usage.get("last_token_usage") or {}) if usage else {}
+    window = usage.get("model_context_window") if usage else None
+    if isinstance(window, (int, float)) and window > 0 and last:
+        payload["context_window"] = {
+            "total_input_tokens": last.get("total_tokens") or 0,
+            "context_window_size": window,
+        }
+    if last.get("input_tokens"):
+        payload["cache"] = {"total": last["input_tokens"],
+                            "read": last.get("cached_input_tokens") or 0}
+
+    # Codex reports quota as primary/secondary with the window length attached,
+    # rather than named five_hour/seven_day slots, so bucket by that length.
+    rl = {}
+    for key in ("primary", "secondary"):
+        entry = (limits or {}).get(key)
+        if not isinstance(entry, dict) or not isinstance(entry.get("used_percent"), (int, float)):
+            continue
+        minutes = entry.get("window_minutes") or 0
+        slot = "five_hour" if 0 < minutes <= 720 else "seven_day"
+        rl[slot] = {"used_percentage": entry["used_percent"], "resets_at": entry.get("resets_at")}
+    if rl:
+        payload["rate_limits"] = rl
+    return payload
+
+
+_SGR = re.compile(r"\033\[(?:(1);)?38;5;(\d+)m")
+
+
+def to_tmux(line: str) -> str:
+    """Rewrite our ANSI colours as tmux format strings.
+
+    tmux status strings take `#[fg=colour114]`, not SGR escapes, and treat a bare
+    `#` as the start of a format, so literal ones have to be doubled first.
+    Hyperlinks go: OSC 8 does not survive a status line.
+    """
+    line = _OSC8.sub("", line).replace("#", "##")
+    line = _SGR.sub(lambda m: "#[fg=colour" + m.group(2) + (",bold]" if m.group(1) else "]"), line)
+    return line.replace("\033[0m", "#[default]")
+
+
 def main() -> None:
     # Detached background refresh spawned by pr_for_branch; not a status-line render.
     if len(sys.argv) == 5 and sys.argv[1] == "--refresh-pr":
@@ -800,21 +948,45 @@ def main() -> None:
               f"(nudge at {int(env_minutes('WATER_EVERY', WATER_EVERY))})")
         return
 
-    # Anything else flag-shaped is a typo. Without this it falls through to
-    # reading stdin and hangs with no output until Ctrl-D.
-    if len(sys.argv) > 1 and sys.argv[1].startswith("-"):
-        print(f"glint: unknown option {sys.argv[1]!r}\n"
-              "usage: glint.py [--rested | --drank | --rest-status | --version]\n"
-              "       (no arguments: reads Claude Code status JSON on stdin)",
-              file=sys.stderr)
+    harness, tmux, width = "claude", False, None
+    args = sys.argv[1:]
+    while args:
+        a = args.pop(0)
+        if a == "--harness" and args:
+            harness = args.pop(0)
+        elif a == "--tmux":
+            tmux = True
+        elif a == "--width" and args:
+            try:
+                width = int(args.pop(0))
+            except ValueError:
+                print("glint: --width wants a number", file=sys.stderr)
+                sys.exit(2)
+        else:
+            print(f"glint: unknown option {a!r}\n{USAGE}", file=sys.stderr)
+            sys.exit(2)
+
+    if harness in ("claude", "claude-code"):
+        try:
+            d = json.loads(sys.stdin.read())
+        except Exception:
+            d = {}
+    elif harness == "codex":
+        d = codex_payload()          # no hook to pipe us anything: read its session log
+    else:
+        print(f"glint: unknown harness {harness!r} (try: claude, codex)", file=sys.stderr)
         sys.exit(2)
 
-    raw = sys.stdin.read()
-    try:
-        d = json.loads(raw)
-    except Exception:
-        d = {}
+    if width is None:
+        # A tmux status has no tty to measure, so assume it is not the constraint
+        # and let tmux itself truncate; a real terminal gets the honest width.
+        width = 400 if tmux else term_width() - 2
+    line = build_line(d, width)
+    sys.stdout.write(to_tmux(line) if tmux else line)
 
+
+def build_line(d: dict, width: int) -> str:
+    """The status line itself, from a payload in Claude Code's shape."""
     segments: list[tuple[float, int, str]] = []   # (priority, group, text); see fit()
 
     # ── Model badge, with reasoning effort and fast mode ──
@@ -925,6 +1097,11 @@ def main() -> None:
         segments.append((PRIO_CONTEXT, GRP_BUDGET, seg))
 
     # ── Prompt-cache efficiency (cache reads are ~10x cheaper than fresh input) ──
+    # An adapter can hand us the numbers directly; only Claude Code has a
+    # transcript file to derive them from.
+    supplied = d.get("cache") or {}
+    if isinstance(supplied.get("total"), (int, float)) and supplied["total"] > 0:
+        tx_tokens, tx_cached = supplied["total"], supplied.get("read") or 0
     if enabled("CACHE") and tx_tokens > 0:
         ratio = tx_cached / tx_tokens
         rc = GREEN if ratio >= 0.8 else YELLOW if ratio >= 0.5 else RED
@@ -966,7 +1143,7 @@ def main() -> None:
             if wseg:
                 segments.append((PRIO_WATER, GRP_REST, wseg))
 
-    sys.stdout.write(fit(segments, term_width() - 2))
+    return fit(segments, width)
 
 
 if __name__ == "__main__":

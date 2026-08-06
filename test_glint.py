@@ -305,6 +305,142 @@ def test_rate_limits_hidden_when_absent():
     assert "5h" not in out and "7d" not in out
 
 
+# ── harness adapters ──────────────────────────────────────────────────────────
+
+def _codex_session(home: str, cwd: str, *, model="gpt-5.6-sol", effort="medium",
+                   tokens=20173, cached=9984, window=258400, minutes=10080,
+                   used=63.0, resets=None) -> None:
+    """Write a rollout log shaped like the real thing (verified against ~/.codex)."""
+    day = Path(home, "sessions", "2026", "08", "06")
+    day.mkdir(parents=True, exist_ok=True)
+    recs = [
+        {"type": "session_meta", "payload": {"type": "session_meta", "cwd": cwd,
+                                             "session_id": "abc", "cli_version": "0.146.0"}},
+        {"type": "turn_context", "payload": {"type": "turn_context", "cwd": cwd,
+                                             "model": model, "effort": effort}},
+        {"type": "event_msg", "payload": {"type": "token_count", "info": {
+            "total_token_usage": {"input_tokens": tokens, "total_tokens": tokens},
+            "last_token_usage": {"input_tokens": tokens - 69, "cached_input_tokens": cached,
+                                 "total_tokens": tokens},
+            "model_context_window": window},
+            "rate_limits": {"primary": {"used_percent": used, "window_minutes": minutes,
+                                        "resets_at": resets or (time.time() + 3600)},
+                            "secondary": None, "plan_type": "plus"}}},
+    ]
+    with open(day / "rollout-2026-08-06T10-00-00-abc.jsonl", "w") as f:
+        for r in recs:
+            f.write(json.dumps(r) + "\n")
+
+
+def test_codex_payload_translates_a_real_session_shape():
+    with tempfile.TemporaryDirectory() as home:
+        _codex_session(home, "/tmp/proj")
+        os.environ["CODEX_HOME"] = home
+        try:
+            p = glint.codex_payload("/tmp/proj")
+        finally:
+            os.environ.pop("CODEX_HOME", None)
+    assert p["model"]["display_name"] == "gpt-5.6-sol"
+    assert p["effort"]["level"] == "medium"
+    assert p["context_window"] == {"total_input_tokens": 20173, "context_window_size": 258400}
+    assert p["cache"] == {"total": 20104, "read": 9984}
+    # 10080 minutes is the weekly window, not the 5h one
+    assert set(p["rate_limits"]) == {"seven_day"}
+    assert p["rate_limits"]["seven_day"]["used_percentage"] == 63.0
+
+
+def test_codex_quota_buckets_by_window_length():
+    with tempfile.TemporaryDirectory() as home:
+        _codex_session(home, "/tmp/proj", minutes=300)
+        os.environ["CODEX_HOME"] = home
+        try:
+            p = glint.codex_payload("/tmp/proj")
+        finally:
+            os.environ.pop("CODEX_HOME", None)
+    assert set(p["rate_limits"]) == {"five_hour"}
+
+
+def test_codex_prefers_a_session_rooted_at_this_tree():
+    with tempfile.TemporaryDirectory() as home:
+        _codex_session(home, "/tmp/other", model="gpt-5.3")
+        time.sleep(0.01)
+        day = Path(home, "sessions", "2026", "08", "06")
+        recs = [
+            {"type": "session_meta", "payload": {"type": "session_meta", "cwd": "/tmp/proj"}},
+            {"type": "turn_context", "payload": {"type": "turn_context", "model": "gpt-5.6-sol"}},
+        ]
+        with open(day / "rollout-2026-08-06T11-00-00-def.jsonl", "w") as f:
+            for r in recs:
+                f.write(json.dumps(r) + "\n")
+        os.environ["CODEX_HOME"] = home
+        try:
+            deep = glint.codex_payload("/tmp/proj/sub/dir")   # inside the tree
+            assert deep["model"]["display_name"] == "gpt-5.6-sol"
+            elsewhere = glint.codex_payload("/nowhere")       # falls back to newest
+            assert "model" in elsewhere
+        finally:
+            os.environ.pop("CODEX_HOME", None)
+
+
+def test_codex_payload_survives_an_empty_or_missing_home():
+    with tempfile.TemporaryDirectory() as home:
+        os.environ["CODEX_HOME"] = home
+        try:
+            assert glint.codex_payload("/tmp/proj") == {"cwd": "/tmp/proj"}
+        finally:
+            os.environ.pop("CODEX_HOME", None)
+    os.environ["CODEX_HOME"] = "/nope/not/here"
+    try:
+        assert glint.codex_payload("/tmp/proj") == {"cwd": "/tmp/proj"}
+    finally:
+        os.environ.pop("CODEX_HOME", None)
+
+
+def test_codex_renders_a_line_end_to_end():
+    with tempfile.TemporaryDirectory() as home:
+        _codex_session(home, "/tmp", used=63.0, minutes=300)
+        env = {k: v for k, v in os.environ.items() if not k.startswith("GLINT_")}
+        env.update({"CODEX_HOME": home, "GLINT_REST": "0", "GLINT_PR": "0", "COLUMNS": "160"})
+        p = subprocess.run([sys.executable, str(HERE / "glint.py"), "--harness", "codex"],
+                           capture_output=True, text=True, env=env)
+        assert p.returncode == 0, p.stderr
+        plain = glint._ANSI.sub("", p.stdout)
+        assert "G5.6-sol" in plain          # gpt- prefix dropped, codename kept
+        assert "8%" in plain and "20k/258k" in plain
+        assert "5h 63%" in plain
+
+
+def test_cache_ratio_can_be_supplied_by_an_adapter():
+    line = glint._ANSI.sub("", glint.build_line(
+        {"model": {"display_name": "Sonnet 5"}, "cwd": "/tmp",
+         "cache": {"total": 1000, "read": 940}}, 200))
+    assert "94%" in line
+
+
+def test_unknown_harness_is_rejected():
+    p = subprocess.run([sys.executable, str(HERE / "glint.py"), "--harness", "nope"],
+                       capture_output=True, text=True, input="{}")
+    assert p.returncode == 2
+    assert "unknown harness" in p.stderr
+
+
+# ── tmux output ───────────────────────────────────────────────────────────────
+
+def test_tmux_translates_colours_and_escapes_hashes():
+    out = glint.to_tmux(glint.c("main", glint.GREEN) + " #8" + glint.c("!", glint.RED, bold=True))
+    assert "#[fg=colour114]" in out
+    assert "#[fg=colour174,bold]" in out
+    assert "#[default]" in out
+    assert "##8" in out                      # a literal # must be doubled for tmux
+    assert "\033[" not in out and "\x1b[" not in out
+
+
+def test_tmux_drops_hyperlinks_but_keeps_their_text():
+    out = glint.to_tmux(glint.link("#42", "https://example.com/pull/42"))
+    assert "##42" in out
+    assert "example.com" not in out
+
+
 # ── long branch names ─────────────────────────────────────────────────────────
 
 def test_short_branches_are_untouched():

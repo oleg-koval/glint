@@ -24,6 +24,19 @@ curl -fsSL https://raw.githubusercontent.com/oleg-koval/glint/main/install.sh | 
   drink at your desk. Interval is `GLINT_WATER_EVERY`, off with `GLINT_WATER=0`.
 - `--rest-status` now reports both clocks, and `--rested` resets both.
 
+- **Codex CLI support** (`install-codex.sh`). Codex has no status-line hook, so
+  glint reads the rollout log Codex already writes to
+  `~/.codex/sessions/<date>/rollout-*.jsonl` and renders into the tmux status
+  bar instead: `--harness codex --tmux`. The adapter translates Codex's session
+  records into the same payload shape Claude Code pipes in, so every segment
+  downstream is unchanged. Context comes from `model_context_window`, the cache
+  ratio from the cached share of the last turn, and quota is bucketed by the
+  `window_minutes` Codex reports. Cost and lines changed stay hidden because
+  Codex does not record them. `to_tmux()` rewrites our ANSI colours as tmux
+  format strings, doubles literal `#`, and drops hyperlinks, which a tmux status
+  cannot render.
+- `--tmux` and `--width N` output flags, and `--harness claude|codex`.
+
 ### Changed
 
 - **Long branch names are elided in the middle** instead of running off the

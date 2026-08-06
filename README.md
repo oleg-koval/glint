@@ -188,6 +188,42 @@ Treat them as defaults, not doctrine: `GLINT_REST_NUDGE=40` moves the whole ladd
 - **Python 3.8+** (standard library only: no `pip install`)
 - **git** (optional; the branch segment simply hides without it)
 
+## Other harnesses (Codex CLI)
+
+Claude Code is currently the only agent CLI that lets you supply the status line as a command. Verified in August 2026:
+
+| Harness | Status line | External command hook |
+|---------|-------------|-----------------------|
+| Claude Code | `statusLine.command`, session JSON on stdin | **yes** |
+| Codex CLI 0.146 | built-in `tui.status_line`, a fixed set of item ids | no ([#20244](https://github.com/openai/codex/issues/20244), [#17827](https://github.com/openai/codex/issues/17827)) |
+| opencode 1.17 | built-in TUI bar | no ([#30295](https://github.com/anomalyco/opencode/issues/30295) is a proposal; `statusLine` appears nowhere in the shipped config schema) |
+| Hermes Agent | built-in bar, width-adaptive | no |
+| Cursor CLI | - | no |
+
+Codex does not need a hook, though, because it already writes everything worth showing to `~/.codex/sessions/<date>/rollout-*.jsonl`. glint reads that and renders into your **tmux status bar** instead of Codex's own:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/oleg-koval/glint/main/install-codex.sh | bash
+```
+
+```
+✻ G5.6-sol M  │  📁 glint  🌿 dubo-175-retir…kill-gic ●3  │  🧠 8% 20k/258k  ♻️ 50%  📅7d 100% ↻4.1d ⚡240%  │  ☕ 52m break  💧 47m
+```
+
+Use `--print` first to see the tmux block and a live preview without changing anything. The installer keeps a marked, idempotent block in `~/.tmux.conf`, so re-running refreshes it rather than stacking copies, and it leaves the rest of your config alone.
+
+What you get and what you do not:
+
+- **Works**: model with reasoning effort, context against the real `model_context_window`, cached share of the last turn, quota windows with reset ETAs and the pace marker, plus everything that never needed the harness (directory, git, break, hydration).
+- **Missing**: session cost and lines changed. Codex does not record them, and glint would rather omit a segment than invent one.
+- Quota is bucketed by the window length Codex reports (`window_minutes`), so a 300 minute window shows as `⏱5h` and 10080 as `📅7d`.
+
+For any other tool, the harness-independent half still works next to it, including in a plain shell:
+
+```bash
+python3 ~/.claude/glint.py --harness codex --tmux   # or drop --harness for stdin JSON
+```
+
 ## Upgrading
 
 Re-run the installer: it overwrites `~/.claude/glint.py` and leaves your settings alone:
