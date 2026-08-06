@@ -12,7 +12,7 @@ preferences you already chose and every unrelated setting untouched:
 curl -fsSL https://raw.githubusercontent.com/oleg-koval/glint/main/install.sh | bash
 ```
 
-## [1.3.0] - 2026-08-05
+## [1.3.0] - 2026-08-06
 
 ### Added
 
@@ -36,6 +36,14 @@ curl -fsSL https://raw.githubusercontent.com/oleg-koval/glint/main/install.sh | 
   format strings, doubles literal `#`, and drops hyperlinks, which a tmux status
   cannot render.
 - `--tmux` and `--width N` output flags, and `--harness claude|codex`.
+
+### Fixed
+
+- The test suite read your real break and hydration clocks. It switched the rest
+  segment off but not the water one, and never pinned the state file, so the
+  group-divider test passed on CI (no state file, so the clock reads zero) and
+  failed on a machine that had been working for an hour. Every run now points at
+  a throwaway state file, so tests can neither read nor write your own clocks.
 
 ### Changed
 

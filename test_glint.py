@@ -14,6 +14,9 @@ import glint
 
 HERE = Path(__file__).parent
 
+# Throwaway state for the whole run, so nothing here touches ~/.../glint-rest-*.
+_SCRATCH = tempfile.TemporaryDirectory(prefix="glint-tests-")
+
 
 def render(payload: dict, **env_overrides: str) -> str:
     """Run glint.py as Claude Code would and return its stdout.
@@ -23,9 +26,14 @@ def render(payload: dict, **env_overrides: str) -> str:
     default line. Pass `GLINT_BARS="1"` explicitly to test a switched-on feature.
     """
     env = {k: v for k, v in os.environ.items() if not k.startswith("GLINT_")}
-    # The rest clock is shared state in the temp dir; leave the developer's real
-    # one alone unless a test opts in with its own GLINT_REST_STATE.
+    # Both body clocks are shared state in the temp dir. Switch them off AND point
+    # the state file at a throwaway, so a test can never read or write the
+    # developer's real clocks. Without the GLINT_WATER=0 half, this suite passed
+    # on CI (no state file, so the clock reads zero) and failed on a machine that
+    # had been working for 45 minutes: the water segment added a fourth group.
     env["GLINT_REST"] = "0"
+    env["GLINT_WATER"] = "0"
+    env["GLINT_REST_STATE"] = str(Path(_SCRATCH.name) / "rest.json")
     # Payloads whose cwd is a git repo would otherwise reach pr_for_branch, which
     # spawns a detached refresh plus a `gh` network call and writes the real
     # shared cache — orphan processes and state outside the test's control.
@@ -573,7 +581,7 @@ def test_water_hidden_when_switched_off():
         now = time.time()
         _rest_state_full(state, start=now - 3600, last=now, water=now - 3600)
         on = render({"model": {"display_name": "Sonnet 5"}, "cwd": "/tmp"},
-                    GLINT_REST_STATE=state, GLINT_REST="1")
+                    GLINT_REST_STATE=state, GLINT_REST="1", GLINT_WATER="1")
         assert "💧" in on
         off = render({"model": {"display_name": "Sonnet 5"}, "cwd": "/tmp"},
                      GLINT_REST_STATE=state, GLINT_REST="1", GLINT_WATER="0")
