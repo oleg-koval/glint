@@ -842,12 +842,13 @@ def codex_payload(cwd: str | None = None) -> dict:
     for path in _codex_sessions():
         try:
             with open(path, encoding="utf-8", errors="replace") as f:
-                head = list(_records(f.read(65536)))
+        try:
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                head = list(_records(fh.read(65536)))
         except OSError:
             continue
-        session_meta = next((r.get("payload", {}) for r in head
-                            if r.get("type") == "session_meta"), None)
-        meta = session_meta or {}
+        meta = next(((r.get("payload") or {}) for r in head
+                     if r.get("type") == "session_meta"), {})
         session_cwd = meta.get("cwd") or ""
         if chosen is None:
             chosen = (path, head)                # newest, as the fallback
