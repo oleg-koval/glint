@@ -400,7 +400,8 @@ def test_codex_renders_a_line_end_to_end():
     with tempfile.TemporaryDirectory() as home:
         _codex_session(home, "/tmp", used=63.0, minutes=300)
         env = {k: v for k, v in os.environ.items() if not k.startswith("GLINT_")}
-        env.update({"CODEX_HOME": home, "GLINT_REST": "0", "GLINT_PR": "0", "COLUMNS": "160"})
+        env.update({"CODEX_HOME": home, "GLINT_REST": "0", "GLINT_WATER": "0",
+                    "GLINT_REST_STATE": str(Path(home) / "rest.json"), "GLINT_PR": "0", "COLUMNS": "160"})
         p = subprocess.run([sys.executable, str(HERE / "glint.py"), "--harness", "codex"],
                            capture_output=True, text=True, env=env)
         assert p.returncode == 0, p.stderr
@@ -411,10 +412,17 @@ def test_codex_renders_a_line_end_to_end():
 
 
 def test_cache_ratio_can_be_supplied_by_an_adapter():
-    line = glint._ANSI.sub("", glint.build_line(
-        {"model": {"display_name": "Sonnet 5"}, "cwd": "/tmp",
-         "cache": {"total": 1000, "read": 940}}, 200))
-    assert "94%" in line
+    with tempfile.TemporaryDirectory() as d:
+        os.environ["GLINT_REST_STATE"] = str(Path(d) / "rest.json")
+        os.environ["GLINT_WATER"] = "0"
+        try:
+            line = glint._ANSI.sub("", glint.build_line(
+                {"model": {"display_name": "Sonnet 5"}, "cwd": "/tmp",
+                 "cache": {"total": 1000, "read": 940}}, 200))
+            assert "94%" in line
+        finally:
+            os.environ.pop("GLINT_REST_STATE", None)
+            os.environ.pop("GLINT_WATER", None)
 
 
 def test_unknown_harness_is_rejected():

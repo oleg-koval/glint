@@ -59,9 +59,11 @@ fi
 
 # Single quotes inside: the tmux value is already double-quoted, and a nested
 # double quote would end the string mid-path.
-CMD="python3 '$DEST' --harness codex --tmux"
+DEST_ESCAPED="${DEST//\'/\'\\\'\'}"
+CMD="python3 '$DEST_ESCAPED' --harness codex --tmux"
 [ -n "$REST_NUDGE" ] && CMD="GLINT_REST_NUDGE=$REST_NUDGE $CMD"
 [ "${BARS:-0}" = "1" ] && CMD="GLINT_BARS=1 $CMD"
+[ "${GLINT_REST:-}" = "0" ] && CMD="GLINT_REST=0 $CMD"
 
 BLOCK=$(cat <<EOF
 # ── glint (Codex) ── managed block, safe to move but keep the markers
@@ -107,7 +109,7 @@ with open(path, "w") as f:
 PY
 
 echo "-> checking it renders"
-python3 "$DEST" --harness codex --width 160 || true
+python3 "$DEST" --harness codex --width 160
 echo
 
 if [ -n "${TMUX:-}" ]; then

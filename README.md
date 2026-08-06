@@ -206,7 +206,7 @@ Codex does not need a hook, though, because it already writes everything worth s
 curl -fsSL https://raw.githubusercontent.com/oleg-koval/glint/main/install-codex.sh | bash
 ```
 
-```
+```text
 ✻ G5.6-sol M  │  📁 glint  🌿 dubo-175-retir…kill-gic ●3  │  🧠 8% 20k/258k  ♻️ 50%  📅7d 100% ↻4.1d ⚡240%  │  ☕ 52m break  💧 47m
 ```
 
@@ -216,7 +216,7 @@ What you get and what you do not:
 
 - **Works**: model with reasoning effort, context against the real `model_context_window`, cached share of the last turn, quota windows with reset ETAs and the pace marker, plus everything that never needed the harness (directory, git, break, hydration).
 - **Missing**: session cost and lines changed. Codex does not record them, and glint would rather omit a segment than invent one.
-- Quota is bucketed by the window length Codex reports (`window_minutes`), so a 300 minute window shows as `⏱5h` and 10080 as `📅7d`.
+- Quota is bucketed by the window length Codex reports (`window_minutes`), so a 300-minute window shows as `⏱5h` and 10080 as `📅7d`.
 
 For any other tool, the harness-independent half still works next to it, including in a plain shell:
 

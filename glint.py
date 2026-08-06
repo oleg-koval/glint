@@ -576,7 +576,7 @@ def shorten_branch(name: str, limit: int | None = None) -> str:
     tail_budget = keep - head_budget
     # Find the longest prefix that fits head_budget cells.
     head_chars = 0
-    for i, ch in enumerate(name):
+    for i in range(len(name)):
         if vis_width(name[:i+1]) > head_budget:
             break
         head_chars = i + 1
@@ -617,9 +617,9 @@ class _FileLock:
 
     def __enter__(self):
         try:
-            self.fd = os.open(self.lock_path, os.O_WRONLY | os.O_CREAT, 0o600)
+            self.fd = os.open(self.lock_path, os.O_WRONLY | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
             if fcntl is not None:
-                fcntl.flock(self.fd, fcntl.LOCK_EX)
+                fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except Exception:
             pass  # best-effort locking
         return self
@@ -718,11 +718,12 @@ def rest_reset(path: str | None = None) -> bool:
     """
     now = time.time()
     path = path or _rest_state_path()
-    try:
-        _write_private(path, {"start": now, "last": now, "water": now})
-        return True
-    except Exception:
-        return False
+    with _FileLock(path):
+        try:
+            _write_private(path, {"start": now, "last": now, "water": now})
+            return True
+        except Exception:
+            return False
 
 
 def water_reset(path: str | None = None) -> bool:
@@ -840,11 +841,13 @@ def codex_payload(cwd: str | None = None) -> dict:
     chosen = None
     for path in _codex_sessions():
         try:
-            head = list(_records(open(path, encoding="utf-8", errors="replace").read(65536)))
+            with open(path, encoding="utf-8", errors="replace") as f:
+                head = list(_records(f.read(65536)))
         except OSError:
             continue
-        meta = next((r.get("payload", {}) for r in head
-                     if r.get("type") == "session_meta"), {})
+        session_meta = next((r.get("payload", {}) for r in head
+                            if r.get("type") == "session_meta"), None)
+        meta = session_meta or {}
         session_cwd = meta.get("cwd") or ""
         if chosen is None:
             chosen = (path, head)                # newest, as the fallback
